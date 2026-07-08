@@ -40,6 +40,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Runtime camera output
+captures/
+
 # OS generated files
 .DS_Store
 Thumbs.db
