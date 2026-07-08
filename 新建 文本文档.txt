@@ -1,0 +1,1836 @@
+ 第一步：超声波测距原理（搞懂它再写代码）
+
+  超声波模块（常见 HC-SR04）有 4 个引脚：
+
+  VCC  → 5V
+  GND  → GND
+  Trig → 树莓派 GPIO 输出（发信号）
+  Echo → 树莓派 GPIO 输入（收回音）
+
+  工作原理：
+
+  你（树莓派）               超声波模块
+      │                         │
+      ├─ Trig 拉高 10~15μs ───→ │   ← 发出 8 个 40kHz 脉冲
+      │                         │
+      │←─ Echo 拉高（回音） ─────┤
+      │                         │
+      │   Echo 高电平的持续时间     │
+      │   = 超声波来回飞行的时间      │
+      │                         │
+
+  距离公式：
+  距离(cm) = Echo高电平时间(秒) × 340(声速m/s) × 100 / 2
+                          ↑          ↑             ↑
+                      来回时间        声速       除以2(来回变单程)
+
+  ▎ 核心就是：发个脉冲，掐表算Echo高电平持续了多久
+
+  ---
+  📖 第二步：读懂参考代码
+
+  参考项目中最干净的版本是 SDC.py，来看：
+
+  Distance() — 单次测距
+
+  def Distance():
+      # 1. 发脉冲: Trig拉低→拉高15μs→拉低
+      GPIO.output(TrigPin, GPIO.LOW)
+      time.sleep(0.000002)          # 2μs
+      GPIO.output(TrigPin, GPIO.HIGH)
+      time.sleep(0.000015)          # 15μs
+      GPIO.output(TrigPin, GPIO.LOW)
+
+      # 2. 等Echo变高（开始接收回音）
+      t3 = time.time()
+      while not GPIO.input(EchoPin):
+          t4 = time.time()
+          if (t4 - t3) > 0.10:      # ⚠️ 超时保护！等100ms还没反应就放弃
+              return -1
+
+      # 3. 等Echo变低（回音结束）
+      t1 = time.time()
+      while GPIO.input(EchoPin):
+          t5 = time.time()
+          if (t5 - t1) > 0.10:      # ⚠️ 超时保护！高电平超过100ms也放弃
+              return -1
+
+      # 4. 计算距离
+      t2 = time.time()
+      time.sleep(0.01)
+      return ((t2 - t1) * 340 / 2) * 100   # 秒×声速÷2×100 = cm
+
+  ⚠️ 注意：这个超时保护是后来加的，All.py 和 FaceColor.py 里的版本就没超时保护，如果 Echo 悬空会卡死。
+
+  Distance_test() — 多次采样取均值
+
+  def Distance_test():
+      num = 0
+      ultrasonic = []
+      while num < 4:              # 测4次
+          distance = Distance()
+          while int(distance) == -1:          # 超时了就重测
+              distance = Distance()
+          while int(distance) >= 500 or int(distance) == 0:  # 不合理值也重测
+              distance = Distance()
+          ultrasonic.append(distance)
+          num += 1
+          time.sleep(0.01)
+      distance = (ultrasonic[1] + ultrasonic[2] + ultrasonic[3]) / 3  # 去掉第0次，取后3次平均
+      return distance
+
+  avoid_obstacle() — 避障线程（会开车！）
+
+  def avoid_obstacle():
+      while True:
+          global obstacle_detected
+          distance = Distance_test()
+          if distance < 20:           # <20cm 有障碍
+              obstacle_detected = True
+          else:
+              obstacle_detected = False
+
+  这个函数是在线程里一直跑的，主程序通过检查 obstacle_detected 全局变量来决定是否重规划路径。
+
+  ---
+  ⚠️ 第三步：已知风险
+
+  你的文档分析得很清楚，我补充几点具体的：
+
+  ┌───────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────┐
+  │       风险        │                                            详情                                             │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ BCM 0/1 是 I2C    │ 树莓派 BCM 0=EEPROM SDA, BCM 1=EEPROM SCL，部分主板 I2C 上拉电阻会影响 Echo                 │
+  │ 引脚              │ 电平。你必须核对 Yahboom 的实际接线！                                                       │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 没有超时保护      │ All.py FaceColor.py Rescue.py 的版本没有超时保护，Echo 悬空 → 死循环                        │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 多线程无锁        │ obstacle_detected 是简单全局变量，Python GIL 下读基本安全，但写入和读取之间可能有延迟       │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 避障直接开车      │ avoid_obstacle() 是纯检测，但 servo_appointed_detection() 会调用小车运动函数，不能单独测试  │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 舵机引脚不一致    │ SDC.py/FIN.ipynb 中舵机引脚定义不同                                                         │
+  └───────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ---
+  🛠️ 第四步：迁移步骤（我教你做）
+
+  迁移超声波按三级台阶走，每级我都写好了代码模板：
+
+  台阶 1️⃣：纯测距测试（只打印，不动车）
+
+  先在树莓派上跑这个，确认传感器正常：
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Create file
+ 4wd_project\ultrasonic_test.py
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+    1 """
+    2 超声波测距独立测试
+    3 ==================
+    4 台阶1：只测距、打印，不控电机。
+    5 安全第一：有超时保护、有异常处理。
+    6
+    7 接线核对要点：
+    8   - TrigPin 和 EchoPin 以 Yahboom 小车实际接线为准
+    9   - 参考代码用的是 BCM 0 和 1，但 BCM 0/1 也是 I2C 引脚
+   10   - 如果接在 BCM 0/1 上 Echo 一直超时，说明有 I2C 上拉电阻干扰
+   11   - 此时需要换其他 GPIO
+   12
+   13 使用方法：
+   14   python ultrasonic_test.py
+   15   Ctrl+C 退出
+   16 """
+   17
+   18 import RPi.GPIO as GPIO
+   19 import time
+   20 import sys
+   21
+   22 # ======== 配置区 ========
+   23 # ⚠️ 以下引脚以「Yahboom 小车实际接线」为准！
+   24 #    参考代码使用 BCM 0 和 1，但这两个也是 I2C 引脚，
+   25 #    如果测距异常（一直返回 -1），请换成其他 GPIO。
+   26 TrigPin = 1   # BCM 1  — 也可换 17, 27, 22 等
+   27 EchoPin = 0   # BCM 0  — 也可换 18, 23, 24 等
+   28
+   29 # 超时阈值（秒）：Echo 超过这个时间没反应就算超时
+   30 TIMEOUT = 0.10   # 100ms，对应约 17m 的最大测距范围
+   31
+   32 # 采样参数
+   33 SAMPLES = 3      # 每次测距采几次取中值
+   34 SAMPLE_INTERVAL = 0.01  # 采样间隔（秒）
+   35 MAX_VALID_DISTANCE = 500  # 超过此值视为无效
+   36
+   37 # ======== GPIO 初始化 ========
+   38 def gpio_init():
+   39     """初始化 GPIO，只设置超声波用到的引脚"""
+   40     GPIO.setmode(GPIO.BCM)
+   41     GPIO.setwarnings(False)
+   42     GPIO.setup(TrigPin, GPIO.OUT, initial=GPIO.LOW)
+   43     GPIO.setup(EchoPin, GPIO.IN)
+   44     # 给传感器一点稳定时间
+   45     time.sleep(0.5)
+   46
+   47 # ======== 核心测距 ========
+   48 def distance():
+   49     """
+   50     单次测距，返回厘米值（float）。
+   51     超时或异常返回 -1。
+   52
+   53     原理：
+   54       1. Trig 拉高 15μs 触发测距
+   55       2. 模块发 8 个 40kHz 脉冲
+   56       3. Echo 变高表示收到回音
+   57       4. Echo 变低表示回音结束
+   58       5. 高电平持续时间 × 声速 ÷ 2 = 距离
+   59     """
+   60     # 1. 发送 15μs 的 Trig 脉冲
+   61     GPIO.output(TrigPin, GPIO.LOW)
+   62     time.sleep(0.000002)          # 2μs，确保拉低稳定
+   63     GPIO.output(TrigPin, GPIO.HIGH)
+   64     time.sleep(0.000015)          # 15μs 触发脉冲
+   65     GPIO.output(TrigPin, GPIO.LOW)
+   66
+   67     # 2. 等待 Echo 变高（开始接收回音）
+   68     wait_start = time.time()
+   69     while not GPIO.input(EchoPin):
+   70         if time.time() - wait_start > TIMEOUT:
+   71             return -1  # 超时：没有回音
+   72
+   73     # 3. 记录 Echo 高电平起始时间
+   74     pulse_start = time.time()
+   75
+   76     # 4. 等待 Echo 变低（回音结束）
+   77     while GPIO.input(EchoPin):
+   78         if time.time() - pulse_start > TIMEOUT:
+   79             return -1  # 超时：回音持续过长
+   80
+   81     # 5. 记录结束时间，计算距离
+   82     pulse_end = time.time()
+   83     pulse_duration = pulse_end - pulse_start
+   84
+   85     # 距离(cm) = 时间(s) × 声速(cm/s) ÷ 2
+   86     distance_cm = pulse_duration * 34000 / 2  # 340m/s = 34000 cm/s
+   87
+   88     return distance_cm
+   89
+   90
+   91 def distance_filtered():
+   92     """
+   93     多次测距 + 过滤无效值 + 取中位数（比均值更抗干扰）。
+   94     返回可靠的厘米值（float），全部无效则返回 -1。
+   95     """
+   96     valid = []
+   97
+   98     for i in range(SAMPLES + 2):  # 多采 2 次用于丢弃
+   99         d = distance()
+  100         # 过滤：-1（超时）、0（无回音）、>MAX（异常值）
+  101         if 0 < d < MAX_VALID_DISTANCE:
+  102             valid.append(d)
+  103
+  104         time.sleep(SAMPLE_INTERVAL)
+  105
+  106         # 够了就提前退出
+  107         if len(valid) >= SAMPLES:
+  108             break
+  109
+  110     if not valid:
+  111         return -1
+  112
+  113     # 取中位数（排序后取中间值）
+  114     valid.sort()
+  115     median = valid[len(valid) // 2]
+  116     return round(median, 1)
+  117
+  118
+  119 # ======== 主循环 ========
+  120 def main():
+  121     """持续测距并打印结果"""
+  122     print("=" * 50)
+  123     print("超声波测距测试")
+  124     print("=" * 50)
+  125     print(f"TrigPin = BCM {TrigPin}")
+  126     print(f"EchoPin = BCM {EchoPin}")
+  127     print(f"超时阈值 = {TIMEOUT * 1000:.0f}ms")
+  128     print(f"采样次数 = {SAMPLES}")
+  129     print("-" * 50)
+  130     print("按 Ctrl+C 退出")
+  131     print("=" * 50)
+  132     print()
+  133
+  134     try:
+  135         gpio_init()
+  136
+  137         count = 0
+  138         while True:
+  139             d = distance_filtered()
+  140
+  141             if d < 0:
+  142                 print(f"[{count:04d}] ⚠️  测距超时（传感器未连接或障碍过远）")
+  143             else:
+  144                 # 可视化：距离越近越"危险"
+  145                 bar = "■" * max(1, min(int(d / 5), 20))
+  146                 status = ""
+  147                 if d < 10:
+  148                     status = " 🔴 危险！"
+  149                 elif d < 20:
+  148                     status = " 🔴 危险！"
+  149                 elif d < 20:
+  │ 引脚              │ 电平。你必须核对 Yahboom 的实际接线！                                                       │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 没有超时保护      │ All.py FaceColor.py Rescue.py 的版本没有超时保护，Echo 悬空 → 死循环                        │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 多线程无锁        │ obstacle_detected 是简单全局变量，Python GIL 下读基本安全，但写入和读取之间可能有延迟       │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 避障直接开车      │ avoid_obstacle() 是纯检测，但 servo_appointed_detection() 会调用小车运动函数，不能单独测试  │
+  ├───────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 舵机引脚不一致    │ SDC.py/FIN.ipynb 中舵机引脚定义不同                                                         │
+  └───────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ---
+  🛠️ 第四步：迁移步骤（我教你做）
+
+  迁移超声波按三级台阶走，每级我都写好了代码模板：
+
+  台阶 1️⃣：纯测距测试（只打印，不动车）
+
+  先在树莓派上跑这个，确认传感器正常：
+
+● Write(4wd_project\ultrasonic_test.py)
+  ⎿  Wrote 171 lines to 4wd_project\ultrasonic_test.py
+       1 """
+       2 超声波测距独立测试
+       3 ==================
+       4 台阶1：只测距、打印，不控电机。
+       5 安全第一：有超时保护、有异常处理。
+       6
+       7 接线核对要点：
+       8   - TrigPin 和 EchoPin 以 Yahboom 小车实际接线为准
+       9   - 参考代码用的是 BCM 0 和 1，但 BCM 0/1 也是 I2C 引脚
+      10   - 如果接在 BCM 0/1 上 Echo 一直超时，说明有 I2C 上拉电阻干扰
+     … +161 lines (ctrl+o to expand)
+
+  Thought for 1s (ctrl+o to expand)
+
+● 台阶 2️⃣：加入线程避障检测（仅检测，不动车）
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Create file
+ 4wd_project\ultrasonic_module.py
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+    1 """
+    2 超声波避障检测模块（独立模块）
+    3 =============================
+    4 台阶2：封装成独立模块，提供测距和避障检测接口。
+    5        - 不带舵机
+    6        - 不带电机控制
+    7        - 可单独测试
+    8        - 可被主程序 import
+    9
+   10 使用方法：
+   11   # 独立测试（无需小车，仅测距打印）
+   12   python ultrasonic_module.py --test
+   13
+   14   # 作为模块导入
+   15   from ultrasonic_module import UltrasonicSensor
+   16   sensor = UltrasonicSensor(trig_pin=1, echo_pin=0)
+   17   d = sensor.read_distance()
+   18   if sensor.is_obstructed(d):
+   19       print("有障碍！")
+   20 """
+   21
+   22 import RPi.GPIO as GPIO
+   23 import time
+   24 import threading
+   25 import argparse
+   26
+   27
+   28 class UltrasonicSensor:
+   29     """
+   30     超声波传感器封装类。
+   31
+   32     用法:
+   33         sensor = UltrasonicSensor(trig_pin=1, echo_pin=0, threshold=20)
+   34         d = sensor.read_distance()           # 单次测距
+   35         ok = sensor.is_obstructed(d)         # 是否障碍
+   36         sensor.start_monitoring()             # 启动后台线程
+   37         if sensor.obstacle_detected:          # 在线程中持续检测
+   38             ...
+   39         sensor.stop_monitoring()              # 停止线程
+   40     """
+   41
+   42     def __init__(self, trig_pin=1, echo_pin=0,
+   43                  threshold_cm=20, samples=3,
+   44                  timeout_s=0.10, log_enabled=False):
+   45         """
+   46         参数:
+   47             trig_pin: BCM 引脚号，Trig
+   48             echo_pin: BCM 引脚号，Echo
+   49             threshold_cm: 障碍判定阈值（厘米）
+   50             samples: 每次测距采样次数
+   51             timeout_s: 超时时间（秒）
+   52             log_enabled: 是否打印日志
+   53         """
+   54         self.trig_pin = trig_pin
+   55         self.echo_pin = echo_pin
+   56         self.threshold = threshold_cm
+   57         self.samples = samples
+   58         self.timeout = timeout_s
+   59         self.log = log_enabled
+   60
+   61         # 线程控制
+   62         self._monitoring = False
+   63         self._thread = None
+   64         self._lock = threading.Lock()
+   65
+   66         # 障碍状态（线程间共享）
+   67         self.obstacle_detected = False
+   68         self.last_distance = -1.0
+   69
+   70         # 初始化 GPIO
+   71         self._gpio_init()
+   72
+   73     def _gpio_init(self):
+   74         """初始化超声波引脚"""
+   75         GPIO.setmode(GPIO.BCM)
+   76         GPIO.setwarnings(False)
+   77         GPIO.setup(self.trig_pin, GPIO.OUT, initial=GPIO.LOW)
+   78         GPIO.setup(self.echo_pin, GPIO.IN)
+   79         time.sleep(0.3)
+   80
+   81     # ---------- 测距核心 ----------
+   82
+   83     def read_distance(self):
+   84         """
+   85         单次测距，返回厘米值（float）。
+   86         超时或异常返回 -1。
+   87         """
+   88         # 发 Trig 脉冲
+   89         GPIO.output(self.trig_pin, GPIO.LOW)
+   90         time.sleep(0.000002)
+   91         GPIO.output(self.trig_pin, GPIO.HIGH)
+   92         time.sleep(0.000015)
+   93         GPIO.output(self.trig_pin, GPIO.LOW)
+   94
+   95         # 等 Echo 变高
+   96         wait_start = time.time()
+   97         while not GPIO.input(self.echo_pin):
+   98             if time.time() - wait_start > self.timeout:
+   99                 return -1
+  100
+  101         # 计时开始
+  102         pulse_start = time.time()
+  103
+  104         # 等 Echo 变低
+  105         while GPIO.input(self.echo_pin):
+  106             if time.time() - pulse_start > self.timeout:
+  107                 return -1
+  108
+  109         # 计算距离
+  110         pulse_end = time.time()
+  111         duration = pulse_end - pulse_start
+  112         distance_cm = duration * 34000 / 2
+  113         return distance_cm
+  114
+  115     def read_filtered(self):
+  116         """
+  117         多次采样取中位数，得到稳定距离值。
+  118         返回厘米值（float），全部无效返回 -1。
+  119         """
+  120         valid = []
+  121         for i in range(self.samples + 2):
+  122             d = self.read_distance()
+  123             if 0 < d < 500:  # 过滤无效和过远值
+  124                 valid.append(d)
+  125             time.sleep(0.01)
+  126             if len(valid) >= self.samples:
+  127                 break
+  128
+  129         if not valid:
+  130             return -1
+  131
+  132         valid.sort()
+  133         median = valid[len(valid) // 2]
+  134         return round(median, 1)
+  135
+  136     # ---------- 障碍判定 ----------
+  137
+  138     def is_obstructed(self, distance=None):
+  139         """
+  140         判断距离是否小于阈值。
+  141         如果 distance 为 None，自动测一次。
+  142         """
+  143         if distance is None:
+  144             distance = self.read_filtered()
+  145         if distance < 0:
+  146             return False  # 超时不算障碍
+  147         return distance < self.threshold
+  148
+  149     # ---------- 线程监控 ----------
+  150
+  151     def _monitor_loop(self):
+  152         """后台线程：持续检测障碍"""
+  153         if self.log:
+  154             print(f"[超声波] 监控线程启动（阈值={self.threshold}cm）")
+  155
+  156         while self._monitoring:
+  157             d = self.read_filtered()
+  158
+  159             with self._lock:
+  160                 self.last_distance = d
+  161                 if d > 0 and d < self.threshold:
+  162                     self.obstacle_detected = True
+  163                 else:
+  164                     self.obstacle_detected = False
+  165
+  166             if self.log and d > 0:
+  167                 status = "⚠️ 障碍!" if self.obstacle_detected else "安全"
+  168                 print(f"[超声波] 距离={d:.1f}cm  {status}")
+  169
+  170             time.sleep(0.2)  # 每秒检测 5 次
+  171
+  172         if self.log:
+  173             print("[超声波] 监控线程已停止")
+  174
+  175     def start_monitoring(self):
+  176         """启动后台避障检测线程"""
+  177         if self._monitoring:
+  178             return
+  179         self._monitoring = True
+  180         self._thread = threading.Thread(target=self._monitor_loop,
+  181                                         daemon=True,
+  182                                         name="ultrasonic-monitor")
+  183         self._thread.start()
+  184         if self.log:
+  185             print("[超声波] 监控线程已启动")
+  186
+  187     def stop_monitoring(self):
+  188         """停止后台线程"""
+  189         self._monitoring = False
+  190         if self._thread:
+  191             self._thread.join(timeout=2)
+  192             self._thread = None
+  193
+  194     # ---------- 资源清理 ----------
+  195
+  196     def cleanup(self):
+  197         """停止线程并清理 GPIO"""
+  198         self.stop_monitoring()
+  199         GPIO.cleanup()
+  200         if self.log:
+  201             print("[超声波] GPIO 已清理")
+  202
+  203
+  204 # ======== 独立测试 ========
+  205 def main():
+  206     parser = argparse.ArgumentParser(description="超声波测距测试")
+  207     parser.add_argument("--test", action="store_true",
+  208                        help="进入连续测距测试模式")
+  209     parser.add_argument("--trig", type=int, default=1,
+  210                        help=f"TrigPin BCM 编号（默认 1）")
+  211     parser.add_argument("--echo", type=int, default=0,
+  212                        help=f"EchoPin BCM 编号（默认 0）")
+  213     parser.add_argument("--threshold", type=int, default=20,
+  214                        help="障碍判定阈值 cm（默认 20）")
+  215     parser.add_argument("--monitor", action="store_true",
+  216                        help="启用后台监控线程模式")
+  217     args = parser.parse_args()
+  218
+  219     if not args.test:
+  220         parser.print_help()
+  221         return
+  222
+  223     print("=" * 50)
+  224     print("超声波模块独立测试")
+  225     print("=" * 50)
+  226     print(f"TrigPin  = BCM {args.trig}")
+  227     print(f"EchoPin  = BCM {args.echo}")
+  228     print(f"阈值     = {args.threshold}cm")
+  229     print(f"模式     = {'后台监控' if args.monitor else '手动测距'}")
+  230     print("-" * 50)
+  231     print("按 Ctrl+C 退出")
+  232     print("=" * 50)
+  233
+  234     sensor = UltrasonicSensor(
+  235         trig_pin=args.trig,
+  236         echo_pin=args.echo,
+  237         threshold_cm=args.threshold,
+  238         log_enabled=True
+  239     )
+  240
+  241     try:
+  242         if args.monitor:
+  243             # 模式A：后台线程自动检测
+  244             print("\n启动后台监控...\n")
+  245             sensor.start_monitoring()
+  246             while True:
+  247                 time.sleep(1)
+  248         else:
+  249             # 模式B：手动按需测距
+  248         else:
+  249             # 模式B：手动按需测距
+      151                 elif d < 30:
+      152                     status = " 🟢 接近"
+      153                 else:
+      131     print("=" * 50)
+      132     print()
+      133
+      134     try:
+      135         gpio_init()
+      136
+      137         count = 0
+      138         while True:
+      139             d = distance_filtered()
+      140
+      141             if d < 0:
+      142                 print(f"[{count:04d}] ⚠️  测距超时（传感器未连接或障碍过远）")
+      143             else:
+      144                 # 可视化：距离越近越"危险"
+      145                 bar = "■" * max(1, min(int(d / 5), 20))
+      146                 status = ""
+      147                 if d < 10:
+      148                     status = " 🔴 危险！"
+      149                 elif d < 20:
+      150                     status = " 🟡 注意！"
+      151                 elif d < 30:
+      152                     status = " 🟢 接近"
+      153                 else:
+      154                     status = "    安全"
+      155
+      156                 print(f"[{count:04d}] 距离 = {d:>5.1f} cm  {bar}{status}")
+  先在树莓派上跑这个，确认传感器正常：
+
+● Write(4wd_project\ultrasonic_test.py)
+  ⎿  Wrote 171 lines to 4wd_project\ultrasonic_test.py
+       1 """
+       2 超声波测距独立测试
+       3 ==================
+       4 台阶1：只测距、打印，不控电机。
+       5 安全第一：有超时保护、有异常处理。
+       6
+       7 接线核对要点：
+       8   - TrigPin 和 EchoPin 以 Yahboom 小车实际接线为准
+       9   - 参考代码用的是 BCM 0 和 1，但 BCM 0/1 也是 I2C 引脚
+      10   - 如果接在 BCM 0/1 上 Echo 一直超时，说明有 I2C 上拉电阻干扰
+     … +161 lines (ctrl+o to expand)
+
+  Thought for 1s (ctrl+o to expand)
+
+● 台阶 2️⃣：加入线程避障检测（仅检测，不动车）
+
+● Write(4wd_project\ultrasonic_module.py)
+  ⎿  Wrote 271 lines to 4wd_project\ultrasonic_module.py
+       1 """
+       2 超声波避障检测模块（独立模块）
+       3 =============================
+       4 台阶2：封装成独立模块，提供测距和避障检测接口。
+       5        - 不带舵机
+       6        - 不带电机控制
+       7        - 可单独测试
+       8        - 可被主程序 import
+       9
+      10 使用方法：
+     … +261 lines (ctrl+o to expand)
+
+  Thought for 1s (ctrl+o to expand)
+
+● 台阶 3️⃣：加入舵机转向（用舵机扫三个方向测距）
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Create file
+ 4wd_project\ultrasonic_servo.py
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+    1 """
+    2 超声波 + 舵机扫障模块
+    3 ======================
+    4 台阶3：在超声波基础上，加入舵机控制。
+    5        舵机转头 → 测左/前/右三个方向 → 避障决策。
+    6
+    7 ⚠️ 警告：这个模块只输出决策结果，不直接控制小车运动！
+    8         小车运动由上层模块根据 distance_map 决定。
+    9
+   10 使用方法：
+   11   # 独立测试
+   12   python ultrasonic_servo.py --test
+   13
+   14   # 作为模块导入
+   15   from ultrasonic_servo import UltrasonicServo
+   16   us = UltrasonicServo(servo_pin=10)
+   17   dm = us.scan_surroundings()  # 返回 {'left':..., 'front':..., 'right':...}
+   18 """
+   19
+   20 import RPi.GPIO as GPIO
+   21 import time
+   22 import threading
+   23 import argparse
+   24 import sys
+   25 import os
+   26
+   27 # 尝试导入基础超声波模块
+   28 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+   29 from ultrasonic_module import UltrasonicSensor
+   30
+   31
+   32 class UltrasonicServo:
+   33     """
+   34     超声波 + 舵机扫障。
+   35
+   36     舵机带动超声波模块旋转，分别测量左/前/右三个方向的距离。
+   37
+   38     用法:
+   39         us = UltrasonicServo(servo_pin=10, trig_pin=1, echo_pin=0)
+   40         dm = us.scan_surroundings()
+   41         # 返回 {'left': 45.2, 'front': 12.3, 'right': 50.1}
+   42         best = us.choose_best_direction(dm)
+   43         # 返回 'left' 或 'right'
+   44
+   45     Yahboom 4WD 小车舵机注意事项:
+   46         - 参考代码中 ServoPin = 4（SDC.py）或 USPin = 10（FIN.ipynb）
+   47         - 以实际接线为准！
+   48         - 舵机 PWM 频率通常为 50Hz（周期 20ms）
+   49         - 0°  对应脉宽 ~0.5ms  (占空比 2.5%)
+   50         - 90° 对应脉宽 ~1.5ms  (占空比 7.5%)
+   51         - 180°对应脉宽 ~2.5ms  (占空比 12.5%)
+   52     """
+   53
+   54     # 舵机角度 → PWM 占空比（50Hz 下）
+   55     # 0°=2.5, 90°=7.5, 180°=12.5
+   56     ANGLE_DUTY = {
+   57         0: 2.5,
+   58         45: 5.0,
+   59         90: 7.5,
+   60         135: 10.0,
+   61         180: 12.5,
+   62     }
+   63
+   64     def __init__(self, servo_pin=10, trig_pin=1, echo_pin=0,
+   65                  threshold_cm=30, samples=3):
+   66         """
+   67         参数:
+   68             servo_pin: 舵机信号线 BCM 引脚
+   69             trig_pin:  超声波 Trig BCM 引脚
+   70             echo_pin:  超声波 Echo BCM 引脚
+   71             threshold_cm: 障碍判定阈值
+   72             samples: 每个方向测几次取中值
+   73         """
+   74         self.servo_pin = servo_pin
+   75         self.threshold = threshold_cm
+   76
+   77         # 创建超声波传感器实例（复用其 GPIO 初始化）
+   78         self.sensor = UltrasonicSensor(
+   79             trig_pin=trig_pin,
+   80             echo_pin=echo_pin,
+   81             threshold_cm=threshold_cm,
+   82             samples=samples,
+   83             log_enabled=False
+   84         )
+   85
+   86         # 舵机需要的额外 GPIO 设置
+   87         GPIO.setup(self.servo_pin, GPIO.OUT)
+   88         self.pwm_servo = GPIO.PWM(self.servo_pin, 50)  # 50Hz
+   89         self.pwm_servo.start(0)  # 先不给脉宽
+   90         self._current_angle = 90
+   91         time.sleep(0.3)
+   92
+   93         # 扫障结果缓存
+   94         self.distance_map = {
+   95             'left': -1,
+   96             'front': -1,
+   97             'right': -1,
+   98         }
+   99
+  100     # ---------- 舵机控制 ----------
+  101
+  102     def _angle_to_duty(self, angle):
+  103         """
+  104         角度 → PWM 占空比（线性插值）。
+  105         0°→2.5, 90°→7.5, 180°→12.5
+  106         """
+  107         angle = max(0, min(180, angle))
+  108         if angle in self.ANGLE_DUTY:
+  109             return self.ANGLE_DUTY[angle]
+  110         # 线性插值
+  111         duty = 2.5 + (angle / 180.0) * 10.0
+  112         return round(duty, 1)
+  113
+  114     def set_angle(self, angle, wait_ms=300):
+  115         """
+  116         设置舵机角度。
+  117         参数:
+  118             angle: 0~180 度
+  119             wait_ms: 等待舵机转到位的毫秒数
+  120         """
+  121         angle = max(0, min(180, angle))
+  122         duty = self._angle_to_duty(angle)
+  123         self.pwm_servo.ChangeDutyCycle(duty)
+  124         time.sleep(wait_ms / 1000.0)
+  125         self.pwm_servo.ChangeDutyCycle(0)  # 不给持续信号，防止抖动
+  126         self._current_angle = angle
+  127
+  128     # ---------- 单方向测距 ----------
+  129
+  130     def measure_at(self, angle):
+  131         """
+  132         将舵机转到指定角度 → 测距 → 返回距离(cm)。
+  133         """
+  134         self.set_angle(angle)
+  135         d = self.sensor.read_filtered()
+  136         return d
+  137
+  138     # ---------- 三方向扫障 ----------
+  139
+  140     def scan_surroundings(self):
+  141         """
+  142         依次测 右(0°) → 前(90°) → 左(180°)，更新 distance_map。
+  143         返回 dict: {'left': float, 'front': float, 'right': float}
+  144         """
+  145         # 右 → 前 → 左
+  146         right_d = self.measure_at(0)
+  147         self.distance_map['right'] = right_d
+  148         print(f"  右(0°)   = {right_d:>5.1f} cm" if right_d > 0 else f"  右(0°)   = ⚠️ 超时")
+  149
+  150         front_d = self.measure_at(90)
+  151         self.distance_map['front'] = front_d
+  152         print(f"  前(90°)  = {front_d:>5.1f} cm" if front_d > 0 else f"  前(90°)  = ⚠️ 超时")
+  153
+  154         left_d = self.measure_at(180)
+  155         self.distance_map['left'] = left_d
+  156         print(f"  左(180°) = {left_d:>5.1f} cm" if left_d > 0 else f"  左(180°) = ⚠️ 超时")
+  157
+  158         # 回到前方
+  159         self.set_angle(90, wait_ms=200)
+  160
+  161         return self.distance_map
+  162
+  163     # ---------- 避障决策 ----------
+  164
+  165     def choose_best_direction(self, distance_map=None):
+  166         """
+  167         根据扫障结果，选择最优方向。
+  168
+  169         返回:
+  170             'left'  — 左边最安全
+  171             'right' — 右边最安全
+  172             'front' — 前方通畅
+  173             None    — 所有方向都堵了
+  174         """
+  175         if distance_map is None:
+  176             distance_map = self.distance_map
+  177
+  178         left = distance_map.get('left', -1)
+  179         front = distance_map.get('front', -1)
+  180         right = distance_map.get('right', -1)
+  181
+  182         # 如果某个方向超时（-1），视为安全默认值（500cm）
+  183         if left < 0: left = 500
+  184         if front < 0: front = 500
+  185         if right < 0: right = 500
+  186
+  187         # 优先：前方通畅 > 前方障碍时选最宽的方向
+  188         if front >= self.threshold:
+  189             return 'front'
+  190         elif left >= self.threshold and right >= self.threshold:
+  191             return 'left' if left >= right else 'right'
+  192         elif left >= self.threshold:
+  193             return 'left'
+  194         elif right >= self.threshold:
+  195             return 'right'
+  196         else:
+  197             return None  # 全堵了
+  198
+  199     # ---------- 资源清理 ----------
+  200
+  201     def cleanup(self):
+  202         """清理舵机和超声波资源"""
+  203         if self.pwm_servo:
+  204             self.pwm_servo.stop()
+  205         self.sensor.cleanup()
+  206
+  207
+  208 # ======== 独立测试 ========
+  209 def main():
+  210     parser = argparse.ArgumentParser(description="超声波+舵机扫障测试")
+  211     parser.add_argument("--test", action="store_true",
+  212                        help="进入扫障测试模式")
+  213     parser.add_argument("--servo", type=int, default=10,
+  214                        help="舵机 BCM 引脚（默认 10）")
+  215     parser.add_argument("--trig", type=int, default=1,
+  216                        help="TrigPin BCM（默认 1）")
+  217     parser.add_argument("--echo", type=int, default=0,
+  218                        help="EchoPin BCM（默认 0）")
+  219     parser.add_argument("--threshold", type=int, default=30,
+  220                        help="障碍阈值 cm（默认 30）")
+  221     args = parser.parse_args()
+  222
+  223     if not args.test:
+  224         parser.print_help()
+  225         return
+  226
+  227     print("=" * 55)
+  228     print("超声波 + 舵机扫障测试")
+  229     print("=" * 55)
+  230     print(f"舵机    = BCM {args.servo}")
+  231     print(f"TrigPin = BCM {args.trig}")
+  232     print(f"EchoPin = BCM {args.echo}")
+  233     print(f"阈值    = {args.threshold}cm")
+  234     print("-" * 55)
+  235     print("舵机会依次转到 右(0°) → 前(90°) → 左(180°)")
+  236     print("然后回到前方，输出最佳方向建议。")
+  237     print("按 Ctrl+C 退出")
+  238     print("=" * 55)
+  239
+  240     us = UltrasonicServo(
+  241         servo_pin=args.servo,
+  242         trig_pin=args.trig,
+  243         echo_pin=args.echo,
+  244         threshold_cm=args.threshold
+  245     )
+  244         threshold_cm=args.threshold
+  245     )
+  迁移超声波按三级台阶走，每级我都写好了代码模板：
+
+  台阶 1️⃣：纯测距测试（只打印，不动车）
+
+  先在树莓派上跑这个，确认传感器正常：
+
+● Write(4wd_project\ultrasonic_test.py)
+  ⎿  Wrote 171 lines to 4wd_project\ultrasonic_test.py
+       1 """
+       2 超声波测距独立测试
+       3 ==================
+       4 台阶1：只测距、打印，不控电机。
+       5 安全第一：有超时保护、有异常处理。
+       6
+       7 接线核对要点：
+       8   - TrigPin 和 EchoPin 以 Yahboom 小车实际接线为准
+       9   - 参考代码用的是 BCM 0 和 1，但 BCM 0/1 也是 I2C 引脚
+      10   - 如果接在 BCM 0/1 上 Echo 一直超时，说明有 I2C 上拉电阻干扰
+     … +161 lines (ctrl+o to expand)
+
+  Thought for 1s (ctrl+o to expand)
+
+● 台阶 2️⃣：加入线程避障检测（仅检测，不动车）
+
+● Write(4wd_project\ultrasonic_module.py)
+  ⎿  Wrote 271 lines to 4wd_project\ultrasonic_module.py
+       1 """
+       2 超声波避障检测模块（独立模块）
+       3 =============================
+       4 台阶2：封装成独立模块，提供测距和避障检测接口。
+       5        - 不带舵机
+       6        - 不带电机控制
+       7        - 可单独测试
+       8        - 可被主程序 import
+       9
+      10 使用方法：
+     … +261 lines (ctrl+o to expand)
+
+  Thought for 1s (ctrl+o to expand)
+
+● 台阶 3️⃣：加入舵机转向（用舵机扫三个方向测距）
+
+● Write(4wd_project\ultrasonic_servo.py)
+  ⎿  Wrote 267 lines to 4wd_project\ultrasonic_servo.py
+       1 """
+       2 超声波 + 舵机扫障模块
+       3 ======================
+       4 台阶3：在超声波基础上，加入舵机控制。
+       5        舵机转头 → 测左/前/右三个方向 → 避障决策。
+       6
+       7 ⚠️ 警告：这个模块只输出决策结果，不直接控制小车运动！
+       8         小车运动由上层模块根据 distance_map 决定。
+       9
+      10 使用方法：
+     … +257 lines (ctrl+o to expand)
+
+  Thought for 1s (ctrl+o to expand)
+
+● 好，三个文件都写好了。下面是完整的知识讲解：
+
+  ---
+  📚 超声波模块完整教学
+
+  一、超声波 HC-SR04 工作原理（你考试/答辩用得上）
+
+  发波: Trig 高电平 10~15μs
+            ↓
+  模块发射 8 个 40kHz 超声波
+            ↓
+  遇到障碍反射回来
+            ↓
+  Echo 引脚输出高电平（宽度=来回时间）
+            ↓
+  距离 = 高电平时间 × 声速(340m/s) / 2
+
+  关键参数：
+  - 测距范围：2cm ~ 400cm
+  - 精度：约 3mm
+  - 声速：340 m/s → 34000 cm/s
+  - 最大 Echo 持续时间：约 24ms 对应 400cm
+  - 超时保护阈值：如果你的 Echo 高电平超过 100ms 还没结束，说明有问题
+
+  二、我写了三个文件（逐步递进）
+
+  ┌──────────────────────┬──────┬───────────────────────────────────────────┬─────────────────────────┐
+  │         文件         │ 台阶 │                 做了什么                  │         能测吗          │
+  ├──────────────────────┼──────┼───────────────────────────────────────────┼─────────────────────────┤
+  │ ultrasonic_test.py   │ 1️⃣   │ 纯测距 + 可视化柱状图 + 距离分级提示      │ ✅ 只测距，不碰电机     │
+  ├──────────────────────┼──────┼───────────────────────────────────────────┼─────────────────────────┤
+  │ ultrasonic_module.py │ 2️⃣   │ 封装成 UltrasonicSensor 类 + 后台线程监控 │ ✅ 可 import 给主程序用 │
+  ├──────────────────────┼──────┼───────────────────────────────────────────┼─────────────────────────┤
+  │ ultrasonic_servo.py  │ 3️⃣   │ 加舵机 + 三方向扫障 + 最佳方向建议        │ ✅ 用舵机扫，但不动电机 │
+  └──────────────────────┴──────┴───────────────────────────────────────────┴─────────────────────────┘
+
+  三、三个文件之间的继承关系
+
+  ultrasonic_test.py      ← 最简单，单文件测试
+         ↓ 提取共性
+  ultrasonic_module.py    ← 封装成类，带线程
+         ↓ 增加舵机
+  ultrasonic_servo.py     ← import ultrasonic_module + 舵机控制
+         ↓ 未来
+  你的主控制程序          ← import ultrasonic_servo 获取避障建议
+
+  四、你上树莓派测试的步骤
+
+  Step 1：先测 GPIO 能否正常用
+  # 在你的树莓派上
+  cd /home/pi/4wd_project
+
+  # 台阶1：纯测距
+  python ultrasonic_test.py
+
+  如果一直输出 ⚠️ 测距超时：
+
+  ▎ 原因排查：
+  ▎ 1. BCM 0/1 是 I2C 引脚 — 树莓派 I2C 上拉电阻会干扰 Echo 信号。如果遇到这情况，把 TrigPin 和 EchoPin 换成普通 GPIO（比如 17 和 18）。
+  ▎ 2. 接线错了 — 检查 VCC/GND/Trig/Echo 四根线
+  ▎ 3. 模块坏了 — HC-SR04 便宜但容易坏
+
+  # 如果需要换个引脚测试，用 --trig 和 --echo 参数
+  python ultrasonic_module.py --test --trig 17 --echo 18
+
+  Step 2：台阶2 - 后台线程模式
+  python ultrasonic_module.py --test --monitor
+
+  Step 3：台阶3 - 舵机扫障（先确认舵机引脚！）
+  python ultrasonic_servo.py --test
+
+  五、引脚配置指导（重要！）
+
+  参考代码里的引脚是旧的参考项目的，你的 Yahboom 4WD 小车不一定一样。
+
+  Yahboom 4WD 常见的引脚分配：
+
+  ┌─────────────┬──────────────────────────────────┐
+  │    功能     │         可能的 BCM 引脚          │
+  ├─────────────┼──────────────────────────────────┤
+  │ 超声波 Trig │ 可以接 17、27、22、1（不推荐 1） │
+  ├─────────────┼──────────────────────────────────┤
+  │ 超声波 Echo │ 可以接 18、23、24、0（不推荐 0） │
+  ├─────────────┼──────────────────────────────────┤
+  │ 舵机信号    │ 可以接 4、10、12、13             │
+  └─────────────┴──────────────────────────────────┘
+
+  怎么确认：
+  1. 看 Yahboom 原理图或说明书
+  2. 或者直接用万用表量：超声波 Trig 和 Echo 分别接了哪个 GPIO
+  3. 如果找不到，就把超声波 Trig 接 BCM 17、Echo 接 BCM 18（最安全的通用 GPIO）
+
+  ▎ ⚠️ 特别注意 BCM 0 和 1：
+  ▎ BCM 0 (SDA) 和 BCM 1 (SCL) 是树莓派的 I2C 总线引脚。如果主板上有 I2C 设备或上拉电阻，Echo 信号会被拉高，永远读不到低电平，导致测距卡死。这是参考代码最常见的问题！
+
+  六、核心代码逻辑图解
+
+  Distance() 工作流程：
+
+    Trig LOW (2μs)
+       78         if time.time() - pulse_start > TIMEOUT:
+       79             return -1  # 超时：回音持续过长
+       80
+       81     # 5. 记录结束时间，计算距离
+       82     pulse_end = time.time()
+       83     pulse_duration = pulse_end - pulse_start
+       84
+       85     # 距离(cm) = 时间(s) × 声速(cm/s) ÷ 2
+       86     distance_cm = pulse_duration * 34000 / 2  # 340m/s = 34000 cm/s
+       87
+       88     return distance_cm
+       89
+       90
+       91 def distance_filtered():
+       92     """
+       93     多次测距 + 过滤无效值 + 取中位数（比均值更抗干扰）。
+       94     返回可靠的厘米值（float），全部无效则返回 -1。
+       95     """
+       96     valid = []
+       97
+       98     for i in range(SAMPLES + 2):  # 多采 2 次用于丢弃
+       99         d = distance()
+      100         # 过滤：-1（超时）、0（无回音）、>MAX（异常值）
+      101         if 0 < d < MAX_VALID_DISTANCE:
+      102             valid.append(d)
+      103
+      104         time.sleep(SAMPLE_INTERVAL)
+      105
+      106         # 够了就提前退出
+      107         if len(valid) >= SAMPLES:
+      108             break
+      109
+      110     if not valid:
+      111         return -1
+      112
+      113     # 取中位数（排序后取中间值）
+      114     valid.sort()
+      115     median = valid[len(valid) // 2]
+      116     return round(median, 1)
+      117
+      118
+      119 # ======== 主循环 ========
+      120 def main():
+      121     """持续测距并打印结果"""
+      122     print("=" * 50)
+      123     print("超声波测距测试")
+      124     print("=" * 50)
+      125     print(f"TrigPin = BCM {TrigPin}")
+      126     print(f"EchoPin = BCM {EchoPin}")
+      127     print(f"超时阈值 = {TIMEOUT * 1000:.0f}ms")
+      128     print(f"采样次数 = {SAMPLES}")
+      129     print("-" * 50)
+      130     print("按 Ctrl+C 退出")
+      131     print("=" * 50)
+      132     print()
+      133
+      134     try:
+      135         gpio_init()
+      136
+      137         count = 0
+      138         while True:
+      139             d = distance_filtered()
+      140
+      141             if d < 0:
+      142                 print(f"[{count:04d}] ⚠️  测距超时（传感器未连接或障碍过远）")
+      143             else:
+      144                 # 可视化：距离越近越"危险"
+      145                 bar = "■" * max(1, min(int(d / 5), 20))
+      146                 status = ""
+      147                 if d < 10:
+      148                     status = " 🔴 危险！"
+      149                 elif d < 20:
+      150                     status = " 🟡 注意！"
+      151                 elif d < 30:
+      152                     status = " 🟢 接近"
+      153                 else:
+      154                     status = "    安全"
+      155
+      156                 print(f"[{count:04d}] 距离 = {d:>5.1f} cm  {bar}{status}")
+      157
+      158             count += 1
+      159             time.sleep(0.2)  # 每秒测 5 次
+      160
+      161     except KeyboardInterrupt:
+      162         print("\n\n用户退出")
+      163     except Exception as e:
+      164         print(f"\n\n错误: {e}")
+      165     finally:
+      166         GPIO.cleanup()
+      167         print("GPIO 已清理")
+      168
+      169
+      170 if __name__ == "__main__":
+      171     main()
+
+∴ Now let me continue the teaching. I've written the first step. Let me now write a good explanation and also the step 2 and step 3 code.
+
+                                                                                                                                                 04:00 PM deepseek-v4-flash
+● 台阶 2️⃣：加入线程避障检测（仅检测，不动车）
+
+● Write(D:/小车/4wd_project/ultrasonic_module.py)
+  ⎿  Wrote 271 lines to D:/小车/4wd_project/ultrasonic_module.py
+        1 """
+        2 超声波避障检测模块（独立模块）
+        3 =============================
+        4 台阶2：封装成独立模块，提供测距和避障检测接口。
+        5        - 不带舵机
+        6        - 不带电机控制
+        7        - 可单独测试
+        8        - 可被主程序 import
+        9
+       10 使用方法：
+       11   # 独立测试（无需小车，仅测距打印）
+       12   python ultrasonic_module.py --test
+       13
+       14   # 作为模块导入
+       15   from ultrasonic_module import UltrasonicSensor
+       16   sensor = UltrasonicSensor(trig_pin=1, echo_pin=0)
+       17   d = sensor.read_distance()
+       18   if sensor.is_obstructed(d):
+       19       print("有障碍！")
+       20 """
+       21
+       22 import RPi.GPIO as GPIO
+       23 import time
+       24 import threading
+       25 import argparse
+       26
+       27
+       28 class UltrasonicSensor:
+       29     """
+       30     超声波传感器封装类。
+       31
+       32     用法:
+       33         sensor = UltrasonicSensor(trig_pin=1, echo_pin=0, threshold=20)
+       34         d = sensor.read_distance()           # 单次测距
+       35         ok = sensor.is_obstructed(d)         # 是否障碍
+       36         sensor.start_monitoring()             # 启动后台线程
+       37         if sensor.obstacle_detected:          # 在线程中持续检测
+       38             ...
+       39         sensor.stop_monitoring()              # 停止线程
+       40     """
+       41
+       42     def __init__(self, trig_pin=1, echo_pin=0,
+       43                  threshold_cm=20, samples=3,
+       44                  timeout_s=0.10, log_enabled=False):
+       45         """
+       46         参数:
+       47             trig_pin: BCM 引脚号，Trig
+       48             echo_pin: BCM 引脚号，Echo
+       49             threshold_cm: 障碍判定阈值（厘米）
+       50             samples: 每次测距采样次数
+       51             timeout_s: 超时时间（秒）
+       52             log_enabled: 是否打印日志
+       53         """
+       54         self.trig_pin = trig_pin
+       55         self.echo_pin = echo_pin
+       56         self.threshold = threshold_cm
+       57         self.samples = samples
+       58         self.timeout = timeout_s
+       59         self.log = log_enabled
+       60
+       61         # 线程控制
+       62         self._monitoring = False
+       63         self._thread = None
+       64         self._lock = threading.Lock()
+       65
+       66         # 障碍状态（线程间共享）
+       67         self.obstacle_detected = False
+       68         self.last_distance = -1.0
+       69
+       70         # 初始化 GPIO
+       71         self._gpio_init()
+       72
+       73     def _gpio_init(self):
+       74         """初始化超声波引脚"""
+       75         GPIO.setmode(GPIO.BCM)
+       76         GPIO.setwarnings(False)
+       77         GPIO.setup(self.trig_pin, GPIO.OUT, initial=GPIO.LOW)
+       78         GPIO.setup(self.echo_pin, GPIO.IN)
+       79         time.sleep(0.3)
+       80
+       81     # ---------- 测距核心 ----------
+       82
+       83     def read_distance(self):
+       84         """
+       85         单次测距，返回厘米值（float）。
+       86         超时或异常返回 -1。
+       87         """
+       88         # 发 Trig 脉冲
+       89         GPIO.output(self.trig_pin, GPIO.LOW)
+       90         time.sleep(0.000002)
+       91         GPIO.output(self.trig_pin, GPIO.HIGH)
+       92         time.sleep(0.000015)
+       93         GPIO.output(self.trig_pin, GPIO.LOW)
+       94
+       95         # 等 Echo 变高
+       96         wait_start = time.time()
+       97         while not GPIO.input(self.echo_pin):
+       98             if time.time() - wait_start > self.timeout:
+       99                 return -1
+      100
+      101         # 计时开始
+      102         pulse_start = time.time()
+      103
+      104         # 等 Echo 变低
+      105         while GPIO.input(self.echo_pin):
+      106             if time.time() - pulse_start > self.timeout:
+      107                 return -1
+      108
+      109         # 计算距离
+      110         pulse_end = time.time()
+      111         duration = pulse_end - pulse_start
+      112         distance_cm = duration * 34000 / 2
+      113         return distance_cm
+      114
+      115     def read_filtered(self):
+      116         """
+      117         多次采样取中位数，得到稳定距离值。
+      118         返回厘米值（float），全部无效返回 -1。
+      119         """
+      120         valid = []
+      121         for i in range(self.samples + 2):
+      122             d = self.read_distance()
+      123             if 0 < d < 500:  # 过滤无效和过远值
+      124                 valid.append(d)
+      125             time.sleep(0.01)
+      126             if len(valid) >= self.samples:
+      127                 break
+      128
+      129         if not valid:
+      130             return -1
+      131
+      132         valid.sort()
+      133         median = valid[len(valid) // 2]
+      134         return round(median, 1)
+      135
+      136     # ---------- 障碍判定 ----------
+      137
+      138     def is_obstructed(self, distance=None):
+      139         """
+      140         判断距离是否小于阈值。
+      141         如果 distance 为 None，自动测一次。
+      142         """
+      143         if distance is None:
+      144             distance = self.read_filtered()
+      145         if distance < 0:
+      146             return False  # 超时不算障碍
+      147         return distance < self.threshold
+      148
+      149     # ---------- 线程监控 ----------
+      150
+      151     def _monitor_loop(self):
+      152         """后台线程：持续检测障碍"""
+      153         if self.log:
+      154             print(f"[超声波] 监控线程启动（阈值={self.threshold}cm）")
+      155
+      156         while self._monitoring:
+      157             d = self.read_filtered()
+      158
+      159             with self._lock:
+      160                 self.last_distance = d
+      161                 if d > 0 and d < self.threshold:
+      162                     self.obstacle_detected = True
+      163                 else:
+      164                     self.obstacle_detected = False
+      165
+      166             if self.log and d > 0:
+      167                 status = "⚠️ 障碍!" if self.obstacle_detected else "安全"
+      168                 print(f"[超声波] 距离={d:.1f}cm  {status}")
+      169
+      170             time.sleep(0.2)  # 每秒检测 5 次
+      171
+      172         if self.log:
+      173             print("[超声波] 监控线程已停止")
+      174
+      175     def start_monitoring(self):
+      176         """启动后台避障检测线程"""
+      177         if self._monitoring:
+      178             return
+      179         self._monitoring = True
+      180         self._thread = threading.Thread(target=self._monitor_loop,
+      181                                         daemon=True,
+      182                                         name="ultrasonic-monitor")
+      183         self._thread.start()
+      184         if self.log:
+      185             print("[超声波] 监控线程已启动")
+      186
+      187     def stop_monitoring(self):
+      188         """停止后台线程"""
+      189         self._monitoring = False
+      190         if self._thread:
+      191             self._thread.join(timeout=2)
+      192             self._thread = None
+      193
+      194     # ---------- 资源清理 ----------
+      195
+      196     def cleanup(self):
+      197         """停止线程并清理 GPIO"""
+      198         self.stop_monitoring()
+      199         GPIO.cleanup()
+      200         if self.log:
+      201             print("[超声波] GPIO 已清理")
+      202
+      203
+      204 # ======== 独立测试 ========
+      205 def main():
+      206     parser = argparse.ArgumentParser(description="超声波测距测试")
+      207     parser.add_argument("--test", action="store_true",
+      208                        help="进入连续测距测试模式")
+      209     parser.add_argument("--trig", type=int, default=1,
+      210                        help=f"TrigPin BCM 编号（默认 1）")
+      211     parser.add_argument("--echo", type=int, default=0,
+      212                        help=f"EchoPin BCM 编号（默认 0）")
+      213     parser.add_argument("--threshold", type=int, default=20,
+      214                        help="障碍判定阈值 cm（默认 20）")
+      215     parser.add_argument("--monitor", action="store_true",
+      216                        help="启用后台监控线程模式")
+      217     args = parser.parse_args()
+      218
+      219     if not args.test:
+      220         parser.print_help()
+      221         return
+      222
+      223     print("=" * 50)
+      224     print("超声波模块独立测试")
+      225     print("=" * 50)
+      226     print(f"TrigPin  = BCM {args.trig}")
+      227     print(f"EchoPin  = BCM {args.echo}")
+      228     print(f"阈值     = {args.threshold}cm")
+      229     print(f"模式     = {'后台监控' if args.monitor else '手动测距'}")
+      230     print("-" * 50)
+      231     print("按 Ctrl+C 退出")
+      232     print("=" * 50)
+      233
+      234     sensor = UltrasonicSensor(
+      235         trig_pin=args.trig,
+      236         echo_pin=args.echo,
+      237         threshold_cm=args.threshold,
+      238         log_enabled=True
+      239     )
+      240
+      241     try:
+      242         if args.monitor:
+      243             # 模式A：后台线程自动检测
+      244             print("\n启动后台监控...\n")
+      245             sensor.start_monitoring()
+      246             while True:
+      247                 time.sleep(1)
+      248         else:
+      249             # 模式B：手动按需测距
+      250             count = 0
+      251             while True:
+      252                 d = sensor.read_filtered()
+      253                 if d < 0:
+      254                     print(f"[{count:04d}] ⚠️  测距超时")
+      255                 else:
+      256                     bar = "█" * max(1, min(int(d / 5), 20))
+      257                     obstructed = sensor.is_obstructed(d)
+      258                     flag = " ⚠️ 障碍！" if obstructed else " 安全"
+      259                     print(f"[{count:04d}] 距离 = {d:>5.1f} cm  {bar}{flag}")
+      260
+      261                 count += 1
+      262                 time.sleep(0.3)
+      263
+      264     except KeyboardInterrupt:
+      265         print("\n\n用户退出")
+      266     finally:
+      267         sensor.cleanup()
+      268
+      269
+      270 if __name__ == "__main__":
+      271     main()
+
+∴ Good, now let me write the step 3 - with servo control.
+
+                                                                                                                                                 04:02 PM deepseek-v4-flash
+● 台阶 3️⃣：加入舵机转向（用舵机扫三个方向测距）
+
+● Write(D:/小车/4wd_project/ultrasonic_servo.py)
+  ⎿  Wrote 267 lines to D:/小车/4wd_project/ultrasonic_servo.py
+        1 """
+        2 超声波 + 舵机扫障模块
+        3 ======================
+        4 台阶3：在超声波基础上，加入舵机控制。
+        5        舵机转头 → 测左/前/右三个方向 → 避障决策。
+        6
+        7 ⚠️ 警告：这个模块只输出决策结果，不直接控制小车运动！
+        8         小车运动由上层模块根据 distance_map 决定。
+        9
+       10 使用方法：
+       11   # 独立测试
+       12   python ultrasonic_servo.py --test
+       13
+       14   # 作为模块导入
+       15   from ultrasonic_servo import UltrasonicServo
+       16   us = UltrasonicServo(servo_pin=10)
+       17   dm = us.scan_surroundings()  # 返回 {'left':..., 'front':..., 'right':...}
+       18 """
+       19
+       20 import RPi.GPIO as GPIO
+       21 import time
+       22 import threading
+       23 import argparse
+       24 import sys
+       25 import os
+       26
+       27 # 尝试导入基础超声波模块
+       28 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+       29 from ultrasonic_module import UltrasonicSensor
+       30
+       31
+       32 class UltrasonicServo:
+       33     """
+       34     超声波 + 舵机扫障。
+       35
+       36     舵机带动超声波模块旋转，分别测量左/前/右三个方向的距离。
+       37
+       38     用法:
+       39         us = UltrasonicServo(servo_pin=10, trig_pin=1, echo_pin=0)
+       40         dm = us.scan_surroundings()
+       41         # 返回 {'left': 45.2, 'front': 12.3, 'right': 50.1}
+       42         best = us.choose_best_direction(dm)
+       43         # 返回 'left' 或 'right'
+       44
+       45     Yahboom 4WD 小车舵机注意事项:
+       46         - 参考代码中 ServoPin = 4（SDC.py）或 USPin = 10（FIN.ipynb）
+       47         - 以实际接线为准！
+       48         - 舵机 PWM 频率通常为 50Hz（周期 20ms）
+       49         - 0°  对应脉宽 ~0.5ms  (占空比 2.5%)
+       50         - 90° 对应脉宽 ~1.5ms  (占空比 7.5%)
+       51         - 180°对应脉宽 ~2.5ms  (占空比 12.5%)
+       52     """
+       53
+       54     # 舵机角度 → PWM 占空比（50Hz 下）
+       55     # 0°=2.5, 90°=7.5, 180°=12.5
+       56     ANGLE_DUTY = {
+       57         0: 2.5,
+       58         45: 5.0,
+       59         90: 7.5,
+       60         135: 10.0,
+       61         180: 12.5,
+       62     }
+       63
+       64     def __init__(self, servo_pin=10, trig_pin=1, echo_pin=0,
+       65                  threshold_cm=30, samples=3):
+       66         """
+       67         参数:
+       68             servo_pin: 舵机信号线 BCM 引脚
+       69             trig_pin:  超声波 Trig BCM 引脚
+       70             echo_pin:  超声波 Echo BCM 引脚
+       71             threshold_cm: 障碍判定阈值
+       72             samples: 每个方向测几次取中值
+       73         """
+       74         self.servo_pin = servo_pin
+       75         self.threshold = threshold_cm
+       76
+       77         # 创建超声波传感器实例（复用其 GPIO 初始化）
+       78         self.sensor = UltrasonicSensor(
+       79             trig_pin=trig_pin,
+       80             echo_pin=echo_pin,
+       81             threshold_cm=threshold_cm,
+       82             samples=samples,
+       83             log_enabled=False
+       84         )
+       85
+       86         # 舵机需要的额外 GPIO 设置
+       87         GPIO.setup(self.servo_pin, GPIO.OUT)
+       88         self.pwm_servo = GPIO.PWM(self.servo_pin, 50)  # 50Hz
+       89         self.pwm_servo.start(0)  # 先不给脉宽
+       90         self._current_angle = 90
+       91         time.sleep(0.3)
+       92
+       93         # 扫障结果缓存
+       94         self.distance_map = {
+       95             'left': -1,
+       96             'front': -1,
+       97             'right': -1,
+       98         }
+       99
+      100     # ---------- 舵机控制 ----------
+      101
+      102     def _angle_to_duty(self, angle):
+      103         """
+      104         角度 → PWM 占空比（线性插值）。
+      105         0°→2.5, 90°→7.5, 180°→12.5
+      106         """
+      107         angle = max(0, min(180, angle))
+      108         if angle in self.ANGLE_DUTY:
+      109             return self.ANGLE_DUTY[angle]
+      110         # 线性插值
+      111         duty = 2.5 + (angle / 180.0) * 10.0
+      112         return round(duty, 1)
+      113
+      114     def set_angle(self, angle, wait_ms=300):
+      115         """
+      116         设置舵机角度。
+      117         参数:
+      118             angle: 0~180 度
+      119             wait_ms: 等待舵机转到位的毫秒数
+      120         """
+      121         angle = max(0, min(180, angle))
+      122         duty = self._angle_to_duty(angle)
+      123         self.pwm_servo.ChangeDutyCycle(duty)
+      124         time.sleep(wait_ms / 1000.0)
+      125         self.pwm_servo.ChangeDutyCycle(0)  # 不给持续信号，防止抖动
+      126         self._current_angle = angle
+      127
+      128     # ---------- 单方向测距 ----------
+      129
+      130     def measure_at(self, angle):
+      131         """
+      132         将舵机转到指定角度 → 测距 → 返回距离(cm)。
+      133         """
+      134         self.set_angle(angle)
+      135         d = self.sensor.read_filtered()
+      136         return d
+      137
+      138     # ---------- 三方向扫障 ----------
+      139
+      140     def scan_surroundings(self):
+      141         """
+      142         依次测 右(0°) → 前(90°) → 左(180°)，更新 distance_map。
+      143         返回 dict: {'left': float, 'front': float, 'right': float}
+      144         """
+      145         # 右 → 前 → 左
+      146         right_d = self.measure_at(0)
+      147         self.distance_map['right'] = right_d
+      148         print(f"  右(0°)   = {right_d:>5.1f} cm" if right_d > 0 else f"  右(0°)   = ⚠️ 超时")
+      149
+      150         front_d = self.measure_at(90)
+      151         self.distance_map['front'] = front_d
+      152         print(f"  前(90°)  = {front_d:>5.1f} cm" if front_d > 0 else f"  前(90°)  = ⚠️ 超时")
+      153
+      154         left_d = self.measure_at(180)
+      155         self.distance_map['left'] = left_d
+      156         print(f"  左(180°) = {left_d:>5.1f} cm" if left_d > 0 else f"  左(180°) = ⚠️ 超时")
+      157
+      158         # 回到前方
+      159         self.set_angle(90, wait_ms=200)
+      160
+      161         return self.distance_map
+      162
+      163     # ---------- 避障决策 ----------
+      164
+      165     def choose_best_direction(self, distance_map=None):
+      166         """
+      167         根据扫障结果，选择最优方向。
+      168
+      169         返回:
+      170             'left'  — 左边最安全
+      171             'right' — 右边最安全
+      172             'front' — 前方通畅
+      173             None    — 所有方向都堵了
+      174         """
+      175         if distance_map is None:
+      176             distance_map = self.distance_map
+      177
+      178         left = distance_map.get('left', -1)
+      179         front = distance_map.get('front', -1)
+      180         right = distance_map.get('right', -1)
+      181
+      182         # 如果某个方向超时（-1），视为安全默认值（500cm）
+      183         if left < 0: left = 500
+      184         if front < 0: front = 500
+      185         if right < 0: right = 500
+      186
+      187         # 优先：前方通畅 > 前方障碍时选最宽的方向
+      188         if front >= self.threshold:
+      189             return 'front'
+      190         elif left >= self.threshold and right >= self.threshold:
+      191             return 'left' if left >= right else 'right'
+      192         elif left >= self.threshold:
+      193             return 'left'
+      194         elif right >= self.threshold:
+      195             return 'right'
+      196         else:
+      197             return None  # 全堵了
+      198
+      199     # ---------- 资源清理 ----------
+      200
+      201     def cleanup(self):
+      202         """清理舵机和超声波资源"""
+      203         if self.pwm_servo:
+      204             self.pwm_servo.stop()
+      205         self.sensor.cleanup()
+      206
+      207
+      208 # ======== 独立测试 ========
+      209 def main():
+      210     parser = argparse.ArgumentParser(description="超声波+舵机扫障测试")
+      211     parser.add_argument("--test", action="store_true",
+      212                        help="进入扫障测试模式")
+      213     parser.add_argument("--servo", type=int, default=10,
+      214                        help="舵机 BCM 引脚（默认 10）")
+      215     parser.add_argument("--trig", type=int, default=1,
+      216                        help="TrigPin BCM（默认 1）")
+      217     parser.add_argument("--echo", type=int, default=0,
+      218                        help="EchoPin BCM（默认 0）")
+      219     parser.add_argument("--threshold", type=int, default=30,
+      220                        help="障碍阈值 cm（默认 30）")
+      221     args = parser.parse_args()
+      222
+      223     if not args.test:
+      224         parser.print_help()
+      225         return
+      226
+      227     print("=" * 55)
+      228     print("超声波 + 舵机扫障测试")
+      229     print("=" * 55)
+      230     print(f"舵机    = BCM {args.servo}")
+      231     print(f"TrigPin = BCM {args.trig}")
+      232     print(f"EchoPin = BCM {args.echo}")
+      233     print(f"阈值    = {args.threshold}cm")
+      234     print("-" * 55)
+      235     print("舵机会依次转到 右(0°) → 前(90°) → 左(180°)")
+      236     print("然后回到前方，输出最佳方向建议。")
+      237     print("按 Ctrl+C 退出")
+      238     print("=" * 55)
+      239
+      240     us = UltrasonicServo(
+      241         servo_pin=args.servo,
+      242         trig_pin=args.trig,
+      243         echo_pin=args.echo,
+      244         threshold_cm=args.threshold
+      245     )
+      246
+      247     try:
+      248         count = 0
+      249         while True:
+      250             print(f"\n--- 第 {count} 次扫障 ---")
+      251             dm = us.scan_surroundings()
+      252             best = us.choose_best_direction(dm)
+      253             dir_name = {'front': '⬆️ 前方', 'left': '⬅️ 左边', 'right': '➡️ 右边'}
+      254             suggest = dir_name.get(best, '❌ 全堵')
+      255             print(f"  建议方向: {suggest}")
+      256             count += 1
+      257             time.sleep(1)
+      258
+      259     except KeyboardInterrupt:
+      260         print("\n\n用户退出")
+      261     finally:
+      262         us.cleanup()
+      263         print("资源已清理")
+      264
+      265
+      266 if __name__ == "__main__":
+      267     main()
+
+∴ Now let me provide the user with a comprehensive summary of everything they need to know.
+
+                                                                                                                                                 04:03 PM deepseek-v4-flash
+● 好，三个文件都写好了。下面是完整的知识讲解：
+
+  ---
+  📚 超声波模块完整教学
+
+  一、超声波 HC-SR04 工作原理（你考试/答辩用得上）
+
+  发波: Trig 高电平 10~15μs
+            ↓
+  模块发射 8 个 40kHz 超声波
+            ↓
+  遇到障碍反射回来
+            ↓
+  Echo 引脚输出高电平（宽度=来回时间）
+            ↓
+  距离 = 高电平时间 × 声速(340m/s) / 2
+
+  关键参数：
+  - 测距范围：2cm ~ 400cm
+  - 精度：约 3mm
+  - 声速：340 m/s → 34000 cm/s
+  - 最大 Echo 持续时间：约 24ms 对应 400cm
+  - 超时保护阈值：如果你的 Echo 高电平超过 100ms 还没结束，说明有问题
+
+  二、我写了三个文件（逐步递进）
+
+  ┌──────────────────────┬──────┬───────────────────────────────────────────┬─────────────────────────┐
+  │         文件         │ 台阶 │                 做了什么                  │         能测吗          │
+  ├──────────────────────┼──────┼───────────────────────────────────────────┼─────────────────────────┤
+  │ ultrasonic_test.py   │ 1️⃣   │ 纯测距 + 可视化柱状图 + 距离分级提示      │ ✅ 只测距，不碰电机     │
+  ├──────────────────────┼──────┼───────────────────────────────────────────┼─────────────────────────┤
+  │ ultrasonic_module.py │ 2️⃣   │ 封装成 UltrasonicSensor 类 + 后台线程监控 │ ✅ 可 import 给主程序用 │
+  ├──────────────────────┼──────┼───────────────────────────────────────────┼─────────────────────────┤
+  │ ultrasonic_servo.py  │ 3️⃣   │ 加舵机 + 三方向扫障 + 最佳方向建议        │ ✅ 用舵机扫，但不动电机 │
+  └──────────────────────┴──────┴───────────────────────────────────────────┴─────────────────────────┘
+
+  三、三个文件之间的继承关系
+
+  ultrasonic_test.py      ← 最简单，单文件测试
+         ↓ 提取共性
+  ultrasonic_module.py    ← 封装成类，带线程
+         ↓ 增加舵机
+  ultrasonic_servo.py     ← import ultrasonic_module + 舵机控制
+         ↓ 未来
+  你的主控制程序          ← import ultrasonic_servo 获取避障建议
+
+  四、你上树莓派测试的步骤
+
+  Step 1：先测 GPIO 能否正常用
+  # 在你的树莓派上
+  cd /home/pi/4wd_project
+
+  # 台阶1：纯测距
+  python ultrasonic_test.py
+
+  如果一直输出 ⚠️ 测距超时：
+
+  ▎ 原因排查：
+  ▎ 1. BCM 0/1 是 I2C 引脚 — 树莓派 I2C 上拉电阻会干扰 Echo 信号。如果遇到这情况，把 TrigPin 和 EchoPin 换成普通 GPIO（比如 17 和 18）。
+  ▎ 2. 接线错了 — 检查 VCC/GND/Trig/Echo 四根线
+  ▎ 3. 模块坏了 — HC-SR04 便宜但容易坏
+
+  # 如果需要换个引脚测试，用 --trig 和 --echo 参数
+  python ultrasonic_module.py --test --trig 17 --echo 18
+
+  Step 2：台阶2 - 后台线程模式
+  python ultrasonic_module.py --test --monitor
+
+  Step 3：台阶3 - 舵机扫障（先确认舵机引脚！）
+  python ultrasonic_servo.py --test
+
+  五、引脚配置指导（重要！）
+
+  参考代码里的引脚是旧的参考项目的，你的 Yahboom 4WD 小车不一定一样。
+
+  Yahboom 4WD 常见的引脚分配：
+
+  ┌─────────────┬──────────────────────────────────┐
+  │    功能     │         可能的 BCM 引脚          │
+  ├─────────────┼──────────────────────────────────┤
+  │ 超声波 Trig │ 可以接 17、27、22、1（不推荐 1） │
+  ├─────────────┼──────────────────────────────────┤
+  │ 超声波 Echo │ 可以接 18、23、24、0（不推荐 0） │
+  ├─────────────┼──────────────────────────────────┤
+  │ 舵机信号    │ 可以接 4、10、12、13             │
+  └─────────────┴──────────────────────────────────┘
+
+  怎么确认：
+  1. 看 Yahboom 原理图或说明书
+  2. 或者直接用万用表量：超声波 Trig 和 Echo 分别接了哪个 GPIO
+  3. 如果找不到，就把超声波 Trig 接 BCM 17、Echo 接 BCM 18（最安全的通用 GPIO）
+
+  ▎ ⚠️ 特别注意 BCM 0 和 1：
+  ▎ BCM 0 (SDA) 和 BCM 1 (SCL) 是树莓派的 I2C 总线引脚。如果主板上有 I2C 设备或上拉电阻，Echo 信号会被拉高，永远读不到低电平，导致测距卡死。这是参考代码最常见的问题！
+
+  六、核心代码逻辑图解
+
+  Distance() 工作流程：
+       ↓
+    Trig HIGH (15μs)  ──→ 模块发射超声波
+       ↓
+    Trig LOW
+       ↓
+    ┌─ while EchoPin == LOW:     ← 等模块拉高 Echo
+    │   超时？ → return -1
+    │
+    ├─ echo_start = time.time()  ← 开始计时
+    │
+    ├─ while EchoPin == HIGH:    ← 等模块拉低 Echo
+    │   超时？ → return -1
+    │
+    ├─ echo_end = time.time()    ← 结束计时
+    │
+    └─ return (echo_end - echo_start) × 34000 / 2   ← 算距离
+
+  七、多线程避障的工作原理
+
+  主线程                    超声波线程
+    │                          │
+    │                          ├─ while True:
+    │                          │    d = Distance()
+    │                          │    if d < 20cm:
+    │                          │       obstacle_detected = True
+    │                          │    else:
+    │                          │       obstacle_detected = False
+    │                          │    sleep(0.2)
+    │                          │
+    ├─ if obstacle_detected:───┤ ← 读共享变量
+    │    重规划路径              │
+    │    或执行避障              │
+
+  八、接下来你可以做什么
+
+  1. 先在 Windows/Linux 上读代码，理解每行的作用
+  2. 把代码拷到树莓派上，跑 ultrasonic_test.py
+  3. 搞定引脚后再试 ultrasonic_module.py
+  4. 最后再加入你的电机控制，组合成避障方案
