@@ -12,8 +12,6 @@
 
 树莓派项目目录：`/home/pi/4wd_project`
 
-Yahboom 出厂示例源码可能位于 `/home/pi/SmartCar`（wiringPi）和 `/home/pi/python`（Python），不要等同于当前项目目录。
-
 已使用过的 SSH 信息：
 
 - IP：`192.168.50.1`
@@ -36,7 +34,6 @@ Yahboom 出厂示例源码可能位于 `/home/pi/SmartCar`（wiringPi）和 `/ho
 
 - 硬编码 IP、邮箱授权码、API Key、微信密钥等敏感信息。
 - 与当前小车不匹配的 GPIO 引脚、摄像头编号、路径和依赖。
-- 出厂系统可能自启动 `mjpg` 视频服务和 `bluetooth_control`，占用摄像头、GPIO 等临界资源。
 - `GPIO.cleanup` 少写括号的问题，正确写法应为 `GPIO.cleanup()`。
 - 报告/PPT 描述和源码实现不完全一致的情况。
 
