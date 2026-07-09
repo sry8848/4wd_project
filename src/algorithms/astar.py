@@ -47,13 +47,14 @@ def heuristic(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
-def astar(grid, start, end):
+def astar(grid, start, end, blocked_edges=None):
     """在二维网格中搜索从起点到终点的最短路径。
 
     参数说明：
     grid: 矩形二维网格，只允许使用 "A" 表示可通行，"X" 表示障碍物。
     start: 起点坐标，格式为零基索引 (row, col)。
     end: 终点坐标，格式为零基索引 (row, col)。
+    blocked_edges: 可选的不可通行边集合，每条边为包含两个相邻坐标的 frozenset。
 
     返回值：
     找到路径时返回包含起点和终点的坐标列表；无路可走时返回 None。
@@ -61,6 +62,7 @@ def astar(grid, start, end):
     height, width = _validate_grid(grid)
     _validate_coordinate("start", start, height, width)
     _validate_coordinate("end", end, height, width)
+    blocked_edges = _validate_blocked_edges(blocked_edges, height, width)
 
     if grid[start[0]][start[1]] == OBSTACLE:
         raise ValueError("start 不能是障碍物")
@@ -91,6 +93,8 @@ def astar(grid, start, end):
         # 只允许上下左右四连通移动；网格路径以后再由任务层转换成小车动作。
         for neighbor in _neighbors(current_node.position, height, width):
             if neighbor in closed_positions or grid[neighbor[0]][neighbor[1]] == OBSTACLE:
+                continue
+            if frozenset({current_node.position, neighbor}) in blocked_edges:
                 continue
 
             next_g = current_node.g + 1
@@ -156,6 +160,26 @@ def _validate_coordinate(name, coordinate, height, width):
 
     if row < 0 or row >= height or col < 0 or col >= width:
         raise ValueError(f"{name} 超出 grid 范围")
+
+
+def _validate_blocked_edges(blocked_edges, height, width):
+    if blocked_edges is None:
+        return set()
+
+    validated_edges = set()
+    for edge in blocked_edges:
+        if not isinstance(edge, frozenset) or len(edge) != 2:
+            raise ValueError("blocked_edges 的每条边必须是包含两个坐标的 frozenset")
+
+        positions = tuple(edge)
+        _validate_coordinate("blocked_edges 坐标", positions[0], height, width)
+        _validate_coordinate("blocked_edges 坐标", positions[1], height, width)
+        if heuristic(positions[0], positions[1]) != 1:
+            raise ValueError("blocked_edges 只能包含相邻节点之间的边")
+
+        validated_edges.add(edge)
+
+    return validated_edges
 
 
 def _neighbors(position, height, width):

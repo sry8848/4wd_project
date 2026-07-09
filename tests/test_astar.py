@@ -28,6 +28,63 @@ class AStarTest(unittest.TestCase):
 
         self.assertEqual(path, [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2)])
 
+    def test_astar_avoids_blocked_edges(self):
+        grid = [
+            ["A", "A", "A"],
+            ["A", "A", "A"],
+        ]
+
+        path = astar(
+            grid,
+            (0, 0),
+            (0, 2),
+            blocked_edges={frozenset({(0, 0), (0, 1)})},
+        )
+
+        self.assertEqual(path[0], (0, 0))
+        self.assertEqual(path[-1], (0, 2))
+        self.assertEqual(len(path), 5)
+        self.assertNotIn(
+            frozenset({(0, 0), (0, 1)}),
+            {frozenset({path[index], path[index + 1]}) for index in range(len(path) - 1)},
+        )
+
+    def test_astar_treats_blocked_edges_as_undirected(self):
+        grid = [
+            ["A", "A"],
+            ["A", "A"],
+        ]
+
+        path = astar(
+            grid,
+            (0, 1),
+            (0, 0),
+            blocked_edges={frozenset({(0, 0), (0, 1)})},
+        )
+
+        self.assertEqual(path, [(0, 1), (1, 1), (1, 0), (0, 0)])
+
+    def test_astar_rejects_non_adjacent_blocked_edge(self):
+        grid = [
+            ["A", "A"],
+            ["A", "A"],
+        ]
+
+        with self.assertRaises(ValueError):
+            astar(grid, (0, 0), (1, 1), blocked_edges={frozenset({(0, 0), (1, 1)})})
+
+    def test_astar_rejects_out_of_range_blocked_edge(self):
+        grid = [["A", "A"]]
+
+        with self.assertRaises(ValueError):
+            astar(grid, (0, 0), (0, 1), blocked_edges={frozenset({(0, 0), (1, 0)})})
+
+    def test_astar_rejects_blocked_edge_that_is_not_frozenset(self):
+        grid = [["A", "A"]]
+
+        with self.assertRaises(ValueError):
+            astar(grid, (0, 0), (0, 1), blocked_edges={((0, 0), (0, 1))})
+
     def test_astar_returns_start_when_start_is_end(self):
         grid = [["A"]]
 

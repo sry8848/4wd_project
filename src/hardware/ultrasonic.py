@@ -60,6 +60,7 @@ class UltrasonicSensor:
 
         self.trig_pin = trig_pin if trig_pin is not None else config.ULTRASONIC_TRIG
         self.echo_pin = echo_pin if echo_pin is not None else config.ULTRASONIC_ECHO
+        self.pins = (self.trig_pin, self.echo_pin)
         self.threshold = threshold_cm if threshold_cm is not None else config.ULTRASONIC_THRESHOLD
         self.samples = samples if samples is not None else config.ULTRASONIC_SAMPLES
         self.timeout = timeout_s if timeout_s is not None else config.ULTRASONIC_TIMEOUT
@@ -197,7 +198,7 @@ class UltrasonicSensor:
     def close(self):
         """Stop monitoring and release GPIO resources."""
         self.stop_monitoring()
-        self._gpio.cleanup()
+        self._gpio.cleanup(self.pins)
 
 
 class UltrasonicServo:

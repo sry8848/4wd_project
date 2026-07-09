@@ -2,7 +2,7 @@
 
 本文说明“黑线网格点到点导航 + 当前边障碍重规划 + 中途障碍掉头回节点恢复”的模块分工和运行路径。
 
-当前仓库已经具备 A*、基础巡线、电机驱动、超声波测距、倒车雷达等基础能力；`edge_follow.py`、`grid_navigation.py` 仍是计划新增模块，本文会明确标注为“计划新增”，不能把它们当成已经实现的代码。
+当前仓库已经具备 A*、基础巡线、电机驱动、超声波测距、倒车雷达、边执行器和网格导航状态机等能力。
 
 ## 1. 功能口径
 
@@ -29,17 +29,17 @@
 
 ### 2.2 `src/algorithms/astar.py`
 
-当前已实现二维矩形网格 A*。
+当前已实现二维矩形网格 A*，并支持节点障碍和边障碍。
 
 - `PASSABLE = "A"`：可通行节点。
 - `OBSTACLE = "X"`：不可通行节点。
 - `Node`：A* 搜索节点，保存 `position`、`parent`、`g`、`h`。
 - `heuristic(a, b)`：计算曼哈顿距离。
-- `astar(grid, start, end)`：根据节点障碍规划路径。
+- `astar(grid, start, end, blocked_edges=None)`：根据节点障碍和可选边障碍规划路径。
 - `grid_to_string(grid)`：把网格转成适合打印的字符串。
 - `format_path(path)`：把 `(row, col)` 路径转成 `A1` 这类展示文本。
 
-计划改造后的接口是：
+边障碍接口是：
 
 ```python
 astar(grid, start, end, blocked_edges=None)
@@ -116,13 +116,13 @@ astar(grid, start, end, blocked_edges=None)
 
 倒车雷达的本质是“距离 -> 蜂鸣提示”。如果超声波安装在车头，它不能保证车尾倒退安全。因此本文中的“回上一节点”采用掉头后正向巡线，不依赖倒车雷达。
 
-## 3. 计划新增模块
+## 3. 网格导航模块
 
 ### 3.1 `src/tasks/edge_follow.py`
 
-计划新增 `EdgeFollower`，职责是执行一条网格边：从当前节点沿黑线走到相邻节点。
+`EdgeFollower` 的职责是执行一条网格边：从当前节点沿黑线走到相邻节点。
 
-建议接口：
+主要接口：
 
 ```python
 class EdgeFollower:
@@ -156,9 +156,9 @@ class EdgeFollower:
 
 ### 3.2 `src/tasks/grid_navigation.py`
 
-计划新增 `GridNavigator`，职责是完整网格导航状态机。
+`GridNavigator` 的职责是完整网格导航状态机。
 
-建议接口：
+主要接口：
 
 ```python
 class GridNavigator:
