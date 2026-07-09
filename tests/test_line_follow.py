@@ -109,6 +109,40 @@ class LineFollowerTest(unittest.TestCase):
         self.assertEqual(action, ACTION_NODE)
         self.assertEqual(motor.calls, [("brake",)])
 
+    def test_step_uses_left_turn_speed_for_left_correction(self):
+        sensor = FakeSensor([LineReading(False, True, False, False)])
+        motor = FakeMotor()
+        follower = LineFollower(
+            sensor,
+            motor,
+            forward_speed=20,
+            turn_speed=70,
+            left_turn_speed=80,
+            search_speed=8,
+        )
+
+        action = follower.step()
+
+        self.assertEqual(action, ACTION_LEFT)
+        self.assertEqual(motor.calls, [("left", 0, 80)])
+
+    def test_step_uses_right_turn_speed_for_right_correction(self):
+        sensor = FakeSensor([LineReading(False, False, True, False)])
+        motor = FakeMotor()
+        follower = LineFollower(
+            sensor,
+            motor,
+            forward_speed=20,
+            turn_speed=70,
+            right_turn_speed=100,
+            search_speed=8,
+        )
+
+        action = follower.step()
+
+        self.assertEqual(action, ACTION_RIGHT)
+        self.assertEqual(motor.calls, [("right", 100, 0)])
+
     def test_run_track_brakes_and_returns_true_after_reaching_node(self):
         sensor = FakeSensor(
             [
@@ -139,6 +173,16 @@ class LineFollowerTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             follower.run_track(max_seconds=0)
+
+    def test_positional_search_speed_keeps_existing_meaning(self):
+        sensor = FakeSensor([LineReading(False, False, False, False)])
+        motor = FakeMotor()
+        follower = LineFollower(sensor, motor, 20, 70, 6)
+
+        action = follower.step()
+
+        self.assertEqual(action, ACTION_SEARCH_LEFT)
+        self.assertEqual(motor.calls, [("spin_left", 6, 6)])
 
 
 if __name__ == "__main__":

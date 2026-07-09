@@ -161,6 +161,47 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertTrue(obstacle_sensor.is_obstructed())
         self.assertEqual(ultrasonic.sync_obstruction_calls, 0)
 
+    def test_line_turn_speeds_are_passed_separately_to_line_follower(self):
+        args = [
+            "test_grid_navigation",
+            "--rows",
+            "3",
+            "--cols",
+            "5",
+            "--start",
+            "A1",
+            "--end",
+            "A2",
+            "--heading",
+            "east",
+            "--line-turn-speed",
+            "70",
+            "--line-left-turn-speed",
+            "80",
+            "--line-right-turn-speed",
+            "100",
+            "--no-ultrasonic",
+        ]
+
+        with patch.object(sys, "argv", args), patch.object(
+            tool, "MotorController", return_value=FakeMotor()
+        ), patch.object(tool, "LineSensor", return_value=FakeLineSensor()), patch.object(
+            tool, "EdgeFollower", FakeEdgeFollower
+        ), patch.object(
+            tool, "GridNavigator", FakeGridNavigator
+        ), redirect_stdout(
+            io.StringIO()
+        ):
+            try:
+                tool.main()
+            except SystemExit as exc:
+                self.fail(f"separate line turn speeds should be accepted: {exc}")
+
+        line_follower = FakeEdgeFollower.instances[0].line_follower
+        self.assertEqual(line_follower.turn_speed, 70)
+        self.assertEqual(line_follower.left_turn_speed, 80)
+        self.assertEqual(line_follower.right_turn_speed, 100)
+
 
 if __name__ == "__main__":
     unittest.main()

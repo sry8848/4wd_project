@@ -89,8 +89,8 @@ and (left_outer == black or right_outer == black)
 | 读数情况 | 当前动作 | 最终电机动作 |
 | --- | --- | --- |
 | 满足节点条件 | `ACTION_NODE` | `motor.brake()` |
-| 左内黑右内白，或左外黑 | `ACTION_LEFT` | `motor.left(0, turn_speed)` |
-| 左内白右内黑，或右外黑 | `ACTION_RIGHT` | `motor.right(turn_speed, 0)` |
+| 左内黑右内白，或左外黑 | `ACTION_LEFT` | `motor.left(0, left_turn_speed)` |
+| 左内白右内黑，或右外黑 | `ACTION_RIGHT` | `motor.right(right_turn_speed, 0)` |
 | 左内黑且右内黑 | `ACTION_FORWARD` | `motor.forward(forward_speed, forward_speed)` |
 | 其它情况 | `ACTION_SEARCH_LEFT` | `motor.spin_left(search_speed, search_speed)` |
 
@@ -98,10 +98,12 @@ and (left_outer == black or right_outer == black)
 
 - `--forward-speed` 默认 20。
 - `--line-turn-speed` 默认 80。
+- `--line-left-turn-speed` 默认不传；不传时使用 `--line-turn-speed`。
+- `--line-right-turn-speed` 默认不传；不传时使用 `--line-turn-speed`。
 - `--search-speed` 默认 8。
 - 你实测时传过 `--forward-speed 15 --line-turn-speed 50 --search-speed 6`。
 
-注意：当前实现的左右修正共用一个 `line-turn-speed`。旧项目不是这样，旧项目有不对称补偿：左修正 `left(0,80)`，右修正 `right(100,0)`。
+现在可以直接用不对称补偿参数贴近旧项目：左修正 `left(0,80)`，右修正 `right(100,0)`。
 
 ### 2.5 `LineFollower.step()` 的职责
 
@@ -379,7 +381,7 @@ edge_follower = EdgeFollower(..., obstacle_sensor=obstacle_sensor, ...)
 这和当前项目最关键的差异：
 
 - 旧项目左修正和右修正速度不对称：`left(0,80)`、`right(100,0)`。
-- 当前项目 `LineFollower` 只有一个 `turn_speed`，左右修正同速。
+- 当前项目已支持 `left_turn_speed` 和 `right_turn_speed` 分开配置；不传时继续使用 `turn_speed` 作为左右共同默认值。
 - 旧项目一开始固定前进 0.2 秒；当前项目用 `_leave_current_node()` 根据传感器状态判断是否离开节点。
 
 ### 7.3 旧项目的避障检测
@@ -435,7 +437,7 @@ if not run_track():
 | 巡线引脚 | 3/5/4/18 | 3/5/4/18 | 3/5/4/18 |
 | 电机引脚 | 20/21/19/26/16/13 | 20/21/19/26/16/13 | 20/21/19/26/16/13 |
 | 直行速度 | CLI 参数，默认 20 | `run(100,100)` | `run(20,20)` |
-| 小弯修正 | 左右共用 `turn_speed` | `left(0,90)`、`right(90,0)` | `left(0,80)`、`right(100,0)` |
+| 小弯修正 | 可分开配置；默认共用 `turn_speed` | `left(0,90)`、`right(90,0)` | `left(0,80)`、`right(100,0)` |
 | 外侧传感器 | 普通左右修正 | 强制原地修正 | 合并进左右修正 |
 | 节点判断 | 内侧两路 + 至少一个外侧 | 无网格节点概念 | 四路全黑 |
 | 离开起点节点 | 根据传感器状态离开 | 无 | 固定前进 0.2 秒 |
@@ -466,11 +468,11 @@ if not run_track():
 当前：
 
 ```text
-left -> motor.left(0, turn_speed)
-right -> motor.right(turn_speed, 0)
+left -> motor.left(0, left_turn_speed)
+right -> motor.right(right_turn_speed, 0)
 ```
 
-你传的 `turn_speed=50`，左右同速。
+如果只传 `--line-turn-speed 50`，左右仍同速，便于保持旧命令行为。
 
 旧项目：
 
@@ -480,6 +482,24 @@ right(100, 0)
 ```
 
 这说明旧项目实车很可能存在左右轮动力差异，或者右修正需要更强。当前对称参数可能不足以把车拉回黑线。
+
+现在可以用下面的参数测试旧项目补偿口径：
+
+```bash
+python3 -m src.tools.test_grid_navigation \
+  --rows 3 --cols 5 \
+  --start A1 --end A2 \
+  --heading east \
+  --forward-speed 20 \
+  --line-turn-speed 80 \
+  --line-left-turn-speed 80 \
+  --line-right-turn-speed 100 \
+  --search-speed 5 \
+  --spin-speed 20 \
+  --edge-timeout 20 \
+  --recovery-timeout 6 \
+  --no-ultrasonic
+```
 
 ## 10. 阅读源码建议顺序
 
@@ -519,7 +539,7 @@ right(100, 0)
 2. 把网格导航里的超声障碍检测改成后台监控。（已完成）
    目的：边执行循环只读取缓存的 `obstacle_detected`，不要每轮同步测距。
 
-3. 让左右修正速度分开配置。
+3. 让左右修正速度分开配置。（已完成）
    目的：支持旧项目的 `left(0,80)`、`right(100,0)` 这种实车补偿。
 
 4. 增加巡线调试输出模式。

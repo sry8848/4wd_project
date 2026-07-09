@@ -65,6 +65,8 @@ class LineFollower:
         forward_speed=20,
         turn_speed=80,
         search_speed=8,
+        left_turn_speed=None,
+        right_turn_speed=None,
     ):
         """保存循迹任务所需的硬件对象和速度参数。
 
@@ -72,13 +74,17 @@ class LineFollower:
         sensor: 提供 read() 方法的循迹传感器对象。
         motor: 提供 forward/left/right/spin_left/brake 方法的电机控制对象。
         forward_speed: 直行时左右电机 PWM 占空比。
-        turn_speed: 偏航修正时外侧电机 PWM 占空比。
+        turn_speed: 默认偏航修正时外侧电机 PWM 占空比。
+        left_turn_speed: 左修正时右侧电机 PWM 占空比；不传时使用 turn_speed。
+        right_turn_speed: 右修正时左侧电机 PWM 占空比；不传时使用 turn_speed。
         search_speed: 丢线后原地左旋搜索的 PWM 占空比。
         """
         self.sensor = sensor
         self.motor = motor
         self.forward_speed = forward_speed
         self.turn_speed = turn_speed
+        self.left_turn_speed = turn_speed if left_turn_speed is None else left_turn_speed
+        self.right_turn_speed = turn_speed if right_turn_speed is None else right_turn_speed
         self.search_speed = search_speed
 
     def step(self):
@@ -95,9 +101,9 @@ class LineFollower:
         elif action == ACTION_FORWARD:
             self.motor.forward(self.forward_speed, self.forward_speed)
         elif action == ACTION_LEFT:
-            self.motor.left(0, self.turn_speed)
+            self.motor.left(0, self.left_turn_speed)
         elif action == ACTION_RIGHT:
-            self.motor.right(self.turn_speed, 0)
+            self.motor.right(self.right_turn_speed, 0)
         else:
             self.motor.spin_left(self.search_speed, self.search_speed)
 

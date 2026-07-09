@@ -44,6 +44,18 @@ def parse_args():
     )
     parser.add_argument("--forward-speed", type=int, default=20)
     parser.add_argument("--line-turn-speed", type=int, default=80)
+    parser.add_argument(
+        "--line-left-turn-speed",
+        type=int,
+        default=None,
+        help="left correction speed; defaults to --line-turn-speed",
+    )
+    parser.add_argument(
+        "--line-right-turn-speed",
+        type=int,
+        default=None,
+        help="right correction speed; defaults to --line-turn-speed",
+    )
     parser.add_argument("--search-speed", type=int, default=8)
     parser.add_argument("--spin-speed", type=int, default=30)
     parser.add_argument("--turn-seconds", type=float, default=0.5)
@@ -128,6 +140,8 @@ def main():
             motor,
             forward_speed=args.forward_speed,
             turn_speed=args.line_turn_speed,
+            left_turn_speed=args.line_left_turn_speed,
+            right_turn_speed=args.line_right_turn_speed,
             search_speed=args.search_speed,
         )
         edge_follower = EdgeFollower(
