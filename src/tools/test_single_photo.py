@@ -21,7 +21,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.hardware.camera import CameraCaptureError, build_photo_path, capture_photo
+from src.hardware.camera import (
+    CameraCaptureError,
+    OpenCVCameraSettings,
+    build_photo_path,
+    capture_photo,
+)
 
 
 def parse_devices(value: str) -> List[int]:
@@ -75,6 +80,33 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--width", type=int, default=None, help="请求图像宽度。")
     parser.add_argument("--height", type=int, default=None, help="请求图像高度。")
+    parser.add_argument("--fps", type=float, default=None, help="请求帧率。")
+    parser.add_argument("--fourcc", default="MJPG", help="请求图像格式，例如 MJPG 或 YUYV。")
+    parser.add_argument("--brightness", type=float, default=None, help="亮度值，需要摄像头支持。")
+    parser.add_argument("--contrast", type=float, default=None, help="对比度值，需要摄像头支持。")
+    parser.add_argument("--saturation", type=float, default=None, help="饱和度值，需要摄像头支持。")
+    parser.add_argument("--gain", type=float, default=None, help="增益值，需要摄像头支持。")
+    parser.add_argument("--exposure", type=float, default=None, help="曝光值，需要摄像头支持。")
+    parser.add_argument("--focus", type=float, default=None, help="焦距值，需要摄像头支持。")
+    parser.add_argument("--sharpness", type=float, default=None, help="摄像头端锐化值，需要驱动支持。")
+    parser.add_argument(
+        "--autofocus",
+        choices=("on", "off", "keep"),
+        default="keep",
+        help="自动对焦控制。手动设置 --focus 时建议 off。",
+    )
+    parser.add_argument(
+        "--auto-exposure",
+        type=float,
+        default=None,
+        help="OpenCV/V4L2 自动曝光原始值，常见 1=manual, 3=auto。",
+    )
+    parser.add_argument(
+        "--burst-count",
+        type=int,
+        default=1,
+        help="连拍张数，自动保存清晰度分数最高的一张。",
+    )
     parser.add_argument(
         "--warmup-frames",
         type=int,
@@ -88,6 +120,37 @@ def parse_args() -> argparse.Namespace:
         help="打开摄像头后的预热时间。",
     )
     return parser.parse_args()
+
+
+def build_camera_settings(args: argparse.Namespace) -> OpenCVCameraSettings:
+    """根据命令行参数构造 OpenCV 摄像头控制项。
+
+    参数:
+        args: 已解析的命令行参数。
+
+    返回:
+        OpenCVCameraSettings，供底层摄像头模块统一应用。
+    """
+
+    autofocus = None
+    if args.autofocus == "on":
+        autofocus = True
+    elif args.autofocus == "off":
+        autofocus = False
+
+    return OpenCVCameraSettings(
+        fps=args.fps,
+        fourcc=args.fourcc,
+        brightness=args.brightness,
+        contrast=args.contrast,
+        saturation=args.saturation,
+        gain=args.gain,
+        exposure=args.exposure,
+        focus=args.focus,
+        sharpness=args.sharpness,
+        autofocus=autofocus,
+        auto_exposure=args.auto_exposure,
+    )
 
 
 def main() -> int:
@@ -126,6 +189,8 @@ def main() -> int:
                 height=args.height,
                 warmup_frames=args.warmup_frames,
                 warmup_seconds=args.warmup_seconds,
+                settings=build_camera_settings(args),
+                burst_count=args.burst_count,
             )
         except CameraCaptureError as exc:
             message = f"摄像头 {device_index} 拍照失败: {exc}"
@@ -140,6 +205,8 @@ def main() -> int:
             print(f"摄像头编号: {result.device_index}", flush=True)
         if result.width and result.height:
             print(f"图像分辨率: {result.width}x{result.height}", flush=True)
+        if result.sharpness is not None:
+            print(f"清晰度分数: {result.sharpness:.2f}", flush=True)
         return 0
 
     print("所有摄像头编号都拍照失败。", file=sys.stderr)

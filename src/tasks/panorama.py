@@ -17,6 +17,7 @@ from src import config
 from src.hardware.camera import (
     CameraBackend,
     OpenCVCameraSession,
+    OpenCVCameraSettings,
     capture_photo,
 )
 from src.hardware.servo import ServoController
@@ -106,6 +107,8 @@ def capture_panorama(
     use_servo: bool = True,
     servo_settle_seconds: float = 0.5,
     capture_delay_seconds: float = 0.4,
+    camera_settings: Optional[OpenCVCameraSettings] = None,
+    burst_count: int = 1,
     stitch: bool = True,
     stitch_confidence: float = 0.01,
 ) -> PanoramaResult:
@@ -129,6 +132,8 @@ def capture_panorama(
         use_servo: Whether to move servos between photos.
         servo_settle_seconds: Delay after each servo angle command.
         capture_delay_seconds: Extra delay before reading each frame.
+        camera_settings: Optional OpenCV camera controls.
+        burst_count: Number of candidate frames to score and choose from.
         stitch: Whether to create ``panorama.jpg`` after capture.
         stitch_confidence: OpenCV Stitcher confidence threshold.
 
@@ -146,6 +151,8 @@ def capture_panorama(
         raise ValueError("servo_settle_seconds must be greater than or equal to 0")
     if capture_delay_seconds < 0:
         raise ValueError("capture_delay_seconds must be greater than or equal to 0")
+    if burst_count < 1:
+        raise ValueError("burst_count must be greater than or equal to 1")
     if tilt_angle is not None:
         _validate_angle("tilt_angle", tilt_angle)
 
@@ -182,6 +189,8 @@ def capture_panorama(
             warmup_frames=warmup_frames,
             warmup_seconds=warmup_seconds,
             capture_delay_seconds=capture_delay_seconds,
+            camera_settings=camera_settings,
+            burst_count=burst_count,
         )
     finally:
         # 实机异常时也要停止 PWM 并释放本任务占用的舵机 GPIO。
@@ -267,6 +276,8 @@ def _capture_frames(
     warmup_frames: int,
     warmup_seconds: float,
     capture_delay_seconds: float,
+    camera_settings: Optional[OpenCVCameraSettings],
+    burst_count: int,
 ) -> Tuple[Path, ...]:
     """Capture all source frames for one panorama run."""
 
@@ -281,6 +292,8 @@ def _capture_frames(
             warmup_frames=warmup_frames,
             warmup_seconds=warmup_seconds,
             capture_delay_seconds=capture_delay_seconds,
+            camera_settings=camera_settings,
+            burst_count=burst_count,
         )
 
     frame_paths = []
@@ -299,6 +312,8 @@ def _capture_frames(
             height=height,
             warmup_frames=warmup_frames,
             warmup_seconds=warmup_seconds,
+            settings=camera_settings,
+            burst_count=burst_count,
         )
         frame_paths.append(frame_path)
     return tuple(frame_paths)
@@ -315,6 +330,8 @@ def _capture_frames_with_opencv_session(
     warmup_frames: int,
     warmup_seconds: float,
     capture_delay_seconds: float,
+    camera_settings: Optional[OpenCVCameraSettings],
+    burst_count: int,
 ) -> Tuple[Path, ...]:
     """Capture all source frames while keeping one OpenCV camera open."""
 
@@ -325,6 +342,7 @@ def _capture_frames_with_opencv_session(
         height=height,
         warmup_frames=warmup_frames,
         warmup_seconds=warmup_seconds,
+        settings=camera_settings,
     ) as camera:
         for index, angle in enumerate(angles):
             if pan_servo is not None:
@@ -334,6 +352,7 @@ def _capture_frames_with_opencv_session(
                 frame_path,
                 warmup_frames=0,
                 delay_seconds=capture_delay_seconds,
+                burst_count=burst_count,
             )
             frame_paths.append(frame_path)
     return tuple(frame_paths)

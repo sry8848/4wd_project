@@ -20,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import config
-from src.hardware.camera import CameraCaptureError
+from src.hardware.camera import CameraCaptureError, OpenCVCameraSettings
 from src.hardware.servo import ServoError
 from src.tasks.panorama import (
     DEFAULT_PANORAMA_DIR,
@@ -150,6 +150,33 @@ def parse_args() -> argparse.Namespace:
         default=0.4,
         help="Extra delay before reading each frame.",
     )
+    parser.add_argument("--fps", type=float, default=None, help="Requested camera frame rate.")
+    parser.add_argument("--fourcc", default="MJPG", help="Requested format, for example MJPG or YUYV.")
+    parser.add_argument("--brightness", type=float, default=None, help="Camera brightness if supported.")
+    parser.add_argument("--contrast", type=float, default=None, help="Camera contrast if supported.")
+    parser.add_argument("--saturation", type=float, default=None, help="Camera saturation if supported.")
+    parser.add_argument("--gain", type=float, default=None, help="Camera gain if supported.")
+    parser.add_argument("--exposure", type=float, default=None, help="Camera exposure if supported.")
+    parser.add_argument("--focus", type=float, default=None, help="Camera focus if supported.")
+    parser.add_argument("--sharpness", type=float, default=None, help="Camera-side sharpness if supported.")
+    parser.add_argument(
+        "--autofocus",
+        choices=("on", "off", "keep"),
+        default="keep",
+        help="Autofocus control. Use off when setting --focus manually.",
+    )
+    parser.add_argument(
+        "--auto-exposure",
+        type=float,
+        default=None,
+        help="Raw OpenCV/V4L2 auto exposure value, often 1=manual and 3=auto.",
+    )
+    parser.add_argument(
+        "--burst-count",
+        type=int,
+        default=1,
+        help="Capture candidate frames and save the sharpest one at each angle.",
+    )
     parser.add_argument(
         "--no-stitch",
         action="store_true",
@@ -162,6 +189,30 @@ def parse_args() -> argparse.Namespace:
         help="OpenCV Stitcher confidence threshold.",
     )
     return parser.parse_args()
+
+
+def build_camera_settings(args: argparse.Namespace) -> OpenCVCameraSettings:
+    """Build OpenCV camera settings from command-line arguments."""
+
+    autofocus = None
+    if args.autofocus == "on":
+        autofocus = True
+    elif args.autofocus == "off":
+        autofocus = False
+
+    return OpenCVCameraSettings(
+        fps=args.fps,
+        fourcc=args.fourcc,
+        brightness=args.brightness,
+        contrast=args.contrast,
+        saturation=args.saturation,
+        gain=args.gain,
+        exposure=args.exposure,
+        focus=args.focus,
+        sharpness=args.sharpness,
+        autofocus=autofocus,
+        auto_exposure=args.auto_exposure,
+    )
 
 
 def main() -> int:
@@ -204,6 +255,8 @@ def main() -> int:
             use_servo=not args.no_servo,
             servo_settle_seconds=args.servo_settle_seconds,
             capture_delay_seconds=args.capture_delay_seconds,
+            camera_settings=build_camera_settings(args),
+            burst_count=args.burst_count,
             stitch=False,
         )
     except (CameraCaptureError, PanoramaError, ServoError, ValueError) as exc:

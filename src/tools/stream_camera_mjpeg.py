@@ -14,8 +14,16 @@ from __future__ import annotations
 
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 import sys
 import time
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.hardware.camera import OpenCVCameraSettings, apply_opencv_camera_settings
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,8 +36,59 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640, help="图像宽度。")
     parser.add_argument("--height", type=int, default=480, help="图像高度。")
     parser.add_argument("--fps", type=float, default=15, help="目标帧率。")
+    parser.add_argument("--fourcc", default="MJPG", help="请求图像格式，例如 MJPG 或 YUYV。")
+    parser.add_argument("--brightness", type=float, default=None, help="亮度值，需要摄像头支持。")
+    parser.add_argument("--contrast", type=float, default=None, help="对比度值，需要摄像头支持。")
+    parser.add_argument("--saturation", type=float, default=None, help="饱和度值，需要摄像头支持。")
+    parser.add_argument("--gain", type=float, default=None, help="增益值，需要摄像头支持。")
+    parser.add_argument("--exposure", type=float, default=None, help="曝光值，需要摄像头支持。")
+    parser.add_argument("--focus", type=float, default=None, help="焦距值，需要摄像头支持。")
+    parser.add_argument("--sharpness", type=float, default=None, help="摄像头端锐化值，需要驱动支持。")
+    parser.add_argument(
+        "--autofocus",
+        choices=("on", "off", "keep"),
+        default="keep",
+        help="自动对焦控制。手动设置 --focus 时建议 off。",
+    )
+    parser.add_argument(
+        "--auto-exposure",
+        type=float,
+        default=None,
+        help="OpenCV/V4L2 自动曝光原始值，常见 1=manual, 3=auto。",
+    )
     parser.add_argument("--jpeg-quality", type=int, default=80, help="JPEG 质量，1 到 100。")
     return parser.parse_args()
+
+
+def build_camera_settings(args: argparse.Namespace) -> OpenCVCameraSettings:
+    """根据命令行参数构造 OpenCV 摄像头控制项。
+
+    参数:
+        args: 已解析的命令行参数。
+
+    返回:
+        OpenCVCameraSettings，供实时预览摄像头应用。
+    """
+
+    autofocus = None
+    if args.autofocus == "on":
+        autofocus = True
+    elif args.autofocus == "off":
+        autofocus = False
+
+    return OpenCVCameraSettings(
+        fps=args.fps,
+        fourcc=args.fourcc,
+        brightness=args.brightness,
+        contrast=args.contrast,
+        saturation=args.saturation,
+        gain=args.gain,
+        exposure=args.exposure,
+        focus=args.focus,
+        sharpness=args.sharpness,
+        autofocus=autofocus,
+        auto_exposure=args.auto_exposure,
+    )
 
 
 def main() -> int:
@@ -49,8 +108,7 @@ def main() -> int:
 
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    camera.set(cv2.CAP_PROP_FPS, args.fps)
-    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
+    apply_opencv_camera_settings(cv2, camera, build_camera_settings(args))
 
     class MjpegHandler(BaseHTTPRequestHandler):
         """把 OpenCV 画面输出为浏览器可看的 MJPEG 流。"""

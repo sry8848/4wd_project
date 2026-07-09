@@ -23,7 +23,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.hardware.camera import CameraCaptureError
+from src.hardware.camera import (
+    CameraCaptureError,
+    OpenCVCameraSettings,
+    apply_opencv_camera_settings,
+    sharpness_score,
+)
 from src.hardware.motor import MotorController
 from src.tasks.panorama import PanoramaError, stitch_images
 
@@ -70,6 +75,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--width", type=int, default=640, help="请求图像宽度。")
     parser.add_argument("--height", type=int, default=480, help="请求图像高度。")
+    parser.add_argument("--fps", type=float, default=None, help="请求帧率。")
+    parser.add_argument("--fourcc", default="MJPG", help="请求图像格式，例如 MJPG 或 YUYV。")
+    parser.add_argument("--brightness", type=float, default=None, help="亮度值，需要摄像头支持。")
+    parser.add_argument("--contrast", type=float, default=None, help="对比度值，需要摄像头支持。")
+    parser.add_argument("--saturation", type=float, default=None, help="饱和度值，需要摄像头支持。")
+    parser.add_argument("--gain", type=float, default=None, help="增益值，需要摄像头支持。")
+    parser.add_argument("--exposure", type=float, default=None, help="曝光值，需要摄像头支持。")
+    parser.add_argument("--focus", type=float, default=None, help="焦距值，需要摄像头支持。")
+    parser.add_argument("--sharpness", type=float, default=None, help="摄像头端锐化值，需要驱动支持。")
+    parser.add_argument(
+        "--autofocus",
+        choices=("on", "off", "keep"),
+        default="keep",
+        help="自动对焦控制。手动设置 --focus 时建议 off。",
+    )
+    parser.add_argument(
+        "--auto-exposure",
+        type=float,
+        default=None,
+        help="OpenCV/V4L2 自动曝光原始值，常见 1=manual, 3=auto。",
+    )
     parser.add_argument(
         "--warmup-frames",
         type=int,
@@ -112,6 +138,37 @@ def parse_args() -> argparse.Namespace:
         help="拍完后尝试生成 panorama.jpg。",
     )
     return parser.parse_args()
+
+
+def build_camera_settings(args: argparse.Namespace) -> OpenCVCameraSettings:
+    """根据命令行参数构造 OpenCV 摄像头控制项。
+
+    参数:
+        args: 已解析的命令行参数。
+
+    返回:
+        OpenCVCameraSettings，供每次重新打开摄像头后应用。
+    """
+
+    autofocus = None
+    if args.autofocus == "on":
+        autofocus = True
+    elif args.autofocus == "off":
+        autofocus = False
+
+    return OpenCVCameraSettings(
+        fps=args.fps,
+        fourcc=args.fourcc,
+        brightness=args.brightness,
+        contrast=args.contrast,
+        saturation=args.saturation,
+        gain=args.gain,
+        exposure=args.exposure,
+        focus=args.focus,
+        sharpness=args.sharpness,
+        autofocus=autofocus,
+        auto_exposure=args.auto_exposure,
+    )
 
 
 def main() -> int:
@@ -165,6 +222,7 @@ def main() -> int:
                 retries=args.capture_retries,
                 retry_delay_seconds=args.retry_delay_seconds,
                 burst_count=args.burst_count,
+                settings=build_camera_settings(args),
             )
             frame_paths.append(frame_path)
     except (CameraCaptureError, RuntimeError, ValueError) as exc:
@@ -246,6 +304,7 @@ def _capture_frame_with_retries(
     retries: int,
     retry_delay_seconds: float,
     burst_count: int,
+    settings: OpenCVCameraSettings,
 ) -> None:
     """打开摄像头连拍并保存最清晰的一张，失败时关闭并重试。
 
@@ -279,6 +338,7 @@ def _capture_frame_with_retries(
                 warmup_frames=warmup_frames,
                 warmup_seconds=warmup_seconds,
                 burst_count=burst_count,
+                settings=settings,
             )
             print(f"  已保存最清晰帧，sharpness={score:.2f}", flush=True)
             return
@@ -301,6 +361,7 @@ def _capture_best_burst_frame(
     warmup_frames: int,
     warmup_seconds: float,
     burst_count: int,
+    settings: OpenCVCameraSettings,
 ) -> float:
     """从一次摄像头会话里连拍多帧，保存清晰度最高的一帧。
 
@@ -325,7 +386,7 @@ def _capture_best_burst_frame(
 
         camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc("M", "J", "P", "G"))
+        apply_opencv_camera_settings(cv2, camera, settings)
         if warmup_seconds > 0:
             time.sleep(warmup_seconds)
 
@@ -339,7 +400,7 @@ def _capture_best_burst_frame(
                 continue
             if read_index < warmup_frames:
                 continue
-            score = _sharpness_score(cv2, frame)
+            score = sharpness_score(cv2, frame)
             if score > best_score:
                 best_score = score
                 best_frame = frame
@@ -351,14 +412,6 @@ def _capture_best_burst_frame(
         return best_score
     finally:
         camera.release()
-
-
-def _sharpness_score(cv2, frame) -> float:
-    """用拉普拉斯方差估计画面清晰度。"""
-
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

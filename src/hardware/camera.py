@@ -36,6 +36,41 @@ class CaptureResult:
     height: int
     device_index: Optional[int]
     backend: str
+    sharpness: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class OpenCVCameraSettings:
+    """Optional OpenCV camera controls.
+
+    Args:
+        fps: Requested camera frame rate.
+        fourcc: Requested pixel format, for example ``MJPG``.
+        brightness: Camera brightness value if supported by the driver.
+        contrast: Camera contrast value if supported by the driver.
+        saturation: Camera saturation value if supported by the driver.
+        gain: Camera gain value if supported by the driver.
+        exposure: Camera exposure value if supported by the driver.
+        focus: Camera focus value if supported by the driver.
+        sharpness: Camera-side sharpening value if supported by the driver.
+        autofocus: Enable or disable autofocus if supported by the driver.
+        auto_exposure: Raw OpenCV auto-exposure value. On many V4L2 cameras,
+            ``1`` means manual and ``3`` means auto.
+        buffer_size: Requested capture buffer size.
+    """
+
+    fps: Optional[float] = None
+    fourcc: Optional[str] = "MJPG"
+    brightness: Optional[float] = None
+    contrast: Optional[float] = None
+    saturation: Optional[float] = None
+    gain: Optional[float] = None
+    exposure: Optional[float] = None
+    focus: Optional[float] = None
+    sharpness: Optional[float] = None
+    autofocus: Optional[bool] = None
+    auto_exposure: Optional[float] = None
+    buffer_size: Optional[float] = 1
 
 
 PathLike = Union[str, Path]
@@ -61,6 +96,7 @@ class OpenCVCameraSession:
         height: Optional[int] = None,
         warmup_frames: int = 5,
         warmup_seconds: float = 0.5,
+        settings: Optional[OpenCVCameraSettings] = None,
     ):
         if warmup_frames < 0:
             raise ValueError("warmup_frames must be greater than or equal to 0")
@@ -72,6 +108,7 @@ class OpenCVCameraSession:
         self.height = height
         self.warmup_frames = warmup_frames
         self.warmup_seconds = warmup_seconds
+        self.settings = settings or OpenCVCameraSettings()
         self._cv2 = None
         self._camera = None
 
@@ -99,6 +136,7 @@ class OpenCVCameraSession:
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         if self.height is not None:
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        apply_opencv_camera_settings(cv2, camera, self.settings)
 
         if self.warmup_seconds > 0:
             time.sleep(self.warmup_seconds)
@@ -115,6 +153,7 @@ class OpenCVCameraSession:
         *,
         warmup_frames: int = 0,
         delay_seconds: float = 0.0,
+        burst_count: int = 1,
     ) -> CaptureResult:
         """Capture one frame from the open camera and save it.
 
@@ -122,6 +161,7 @@ class OpenCVCameraSession:
             output_path: Exact file path to save.
             warmup_frames: Extra frames to discard immediately before saving.
             delay_seconds: Optional delay after servo movement and before read.
+            burst_count: Number of candidate frames to score and choose from.
 
         Returns:
             CaptureResult containing the saved path and frame dimensions.
@@ -131,6 +171,8 @@ class OpenCVCameraSession:
             raise ValueError("warmup_frames must be greater than or equal to 0")
         if delay_seconds < 0:
             raise ValueError("delay_seconds must be greater than or equal to 0")
+        if burst_count < 1:
+            raise ValueError("burst_count must be greater than or equal to 1")
         if self._camera is None or self._cv2 is None:
             raise CameraCaptureError("OpenCV camera session is not open")
 
@@ -139,7 +181,7 @@ class OpenCVCameraSession:
 
         target_path = Path(output_path)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        frame = self._read_frame(warmup_frames)
+        frame, sharpness = self._read_best_frame(warmup_frames, burst_count)
 
         saved = self._cv2.imwrite(str(target_path), frame)
         if not saved:
@@ -152,6 +194,7 @@ class OpenCVCameraSession:
             height=int(frame_height),
             device_index=self.device_index,
             backend="opencv",
+            sharpness=sharpness,
         )
 
     def close(self) -> None:
@@ -182,6 +225,41 @@ class OpenCVCameraSession:
                 f"Camera device {self.device_index} opened, but no frame was read."
             )
         return frame
+
+    def _read_best_frame(self, warmup_frames: int, burst_count: int):
+        """Read several frames and return the sharpest one.
+
+        Args:
+            warmup_frames: Buffered frames to discard before scoring.
+            burst_count: Number of frames scored by Laplacian variance.
+
+        Returns:
+            Tuple of ``(frame, sharpness_score)``.
+        """
+
+        if self._camera is None or self._cv2 is None:
+            raise CameraCaptureError("OpenCV camera session is not open")
+
+        best_frame = None
+        best_score = -1.0
+        total_reads = max(0, warmup_frames) + max(1, burst_count)
+        for read_index in range(total_reads):
+            ok, frame = self._camera.read()
+            if not ok or frame is None:
+                time.sleep(0.05)
+                continue
+            if read_index < warmup_frames:
+                continue
+            score = sharpness_score(self._cv2, frame)
+            if score > best_score:
+                best_score = score
+                best_frame = frame
+
+        if best_frame is None:
+            raise CameraCaptureError(
+                f"Camera device {self.device_index} opened, but no frame was read."
+            )
+        return best_frame, best_score
 
     def __enter__(self) -> "OpenCVCameraSession":
         return self.open()
@@ -214,6 +292,8 @@ def capture_photo(
     height: Optional[int] = None,
     warmup_frames: int = 5,
     warmup_seconds: float = 0.5,
+    settings: Optional[OpenCVCameraSettings] = None,
+    burst_count: int = 1,
 ) -> CaptureResult:
     """Capture one photo from an OpenCV camera and save it to disk.
 
@@ -231,6 +311,8 @@ def capture_photo(
         warmup_frames: Number of frames to discard before saving the final one.
         warmup_seconds: Delay after opening the camera, allowing exposure to
             stabilize.
+        settings: Optional OpenCV camera controls.
+        burst_count: Number of candidate frames to score and choose from.
 
     Returns:
         CaptureResult containing the saved path and frame dimensions.
@@ -240,6 +322,8 @@ def capture_photo(
         raise ValueError("warmup_frames must be greater than or equal to 0")
     if warmup_seconds < 0:
         raise ValueError("warmup_seconds must be greater than or equal to 0")
+    if burst_count < 1:
+        raise ValueError("burst_count must be greater than or equal to 1")
 
     target_path = (
         Path(output_path)
@@ -259,6 +343,8 @@ def capture_photo(
                 height=height,
                 warmup_frames=warmup_frames,
                 warmup_seconds=warmup_seconds,
+                settings=settings,
+                burst_count=burst_count,
             )
         except CameraCaptureError as exc:
             if backend == "opencv":
@@ -307,59 +393,72 @@ def _capture_with_opencv(
     height: Optional[int],
     warmup_frames: int,
     warmup_seconds: float,
+    settings: Optional[OpenCVCameraSettings],
+    burst_count: int,
 ) -> CaptureResult:
-    try:
-        import cv2
-    except ImportError as exc:
-        raise CameraCaptureError(
-            "OpenCV is not installed. Install python3-opencv, or use "
-            "--backend libcamera if this is a CSI camera."
-        ) from exc
+    with OpenCVCameraSession(
+        device_index=device_index,
+        width=width,
+        height=height,
+        warmup_frames=warmup_frames,
+        warmup_seconds=warmup_seconds,
+        settings=settings,
+    ) as camera:
+        return camera.capture(target_path, burst_count=burst_count)
 
-    camera = cv2.VideoCapture(device_index)
-    try:
-        if not camera.isOpened():
-            raise CameraCaptureError(
-                f"Cannot open camera device {device_index}. Check the camera "
-                "index, connection, and whether a video service is using it."
-            )
 
-        if width is not None:
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        if height is not None:
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+def apply_opencv_camera_settings(cv2, camera, settings: OpenCVCameraSettings) -> None:
+    """Apply supported OpenCV camera properties.
 
-        if warmup_seconds > 0:
-            time.sleep(warmup_seconds)
+    Args:
+        cv2: Imported OpenCV module.
+        camera: OpenCV ``VideoCapture`` object.
+        settings: Camera controls requested by the caller.
 
-        frame = None
-        reads = max(1, warmup_frames + 1)
-        for _ in range(reads):
-            ok, current_frame = camera.read()
-            if ok and current_frame is not None:
-                frame = current_frame
-            else:
-                time.sleep(0.05)
+    Simple steps:
+        1. Apply format and buffer controls first.
+        2. Disable auto controls before manual focus/exposure values.
+        3. Apply image quality controls when the driver exposes them.
+    """
 
-        if frame is None:
-            raise CameraCaptureError(
-                f"Camera device {device_index} opened, but no frame was read."
-            )
+    if settings.fourcc:
+        fourcc = settings.fourcc.strip()
+        if len(fourcc) == 4:
+            camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+    _set_if_present(cv2, camera, "CAP_PROP_FPS", settings.fps)
+    _set_if_present(cv2, camera, "CAP_PROP_BUFFERSIZE", settings.buffer_size)
+    _set_if_present(cv2, camera, "CAP_PROP_AUTOFOCUS", _bool_to_number(settings.autofocus))
+    _set_if_present(cv2, camera, "CAP_PROP_AUTO_EXPOSURE", settings.auto_exposure)
+    _set_if_present(cv2, camera, "CAP_PROP_BRIGHTNESS", settings.brightness)
+    _set_if_present(cv2, camera, "CAP_PROP_CONTRAST", settings.contrast)
+    _set_if_present(cv2, camera, "CAP_PROP_SATURATION", settings.saturation)
+    _set_if_present(cv2, camera, "CAP_PROP_GAIN", settings.gain)
+    _set_if_present(cv2, camera, "CAP_PROP_EXPOSURE", settings.exposure)
+    _set_if_present(cv2, camera, "CAP_PROP_FOCUS", settings.focus)
+    _set_if_present(cv2, camera, "CAP_PROP_SHARPNESS", settings.sharpness)
 
-        saved = cv2.imwrite(str(target_path), frame)
-        if not saved:
-            raise CameraCaptureError(f"Failed to write photo to {target_path}")
 
-        frame_height, frame_width = frame.shape[:2]
-        return CaptureResult(
-            path=target_path,
-            width=int(frame_width),
-            height=int(frame_height),
-            device_index=device_index,
-            backend="opencv",
-        )
-    finally:
-        camera.release()
+def sharpness_score(cv2, frame) -> float:
+    """Estimate image sharpness with Laplacian variance."""
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _set_if_present(cv2, camera, property_name: str, value: Optional[float]) -> None:
+    """Set an OpenCV property only when both property and value exist."""
+
+    if value is None or not hasattr(cv2, property_name):
+        return
+    camera.set(getattr(cv2, property_name), float(value))
+
+
+def _bool_to_number(value: Optional[bool]) -> Optional[float]:
+    """Convert optional booleans to OpenCV numeric property values."""
+
+    if value is None:
+        return None
+    return 1.0 if value else 0.0
 
 
 def _capture_with_libcamera(
