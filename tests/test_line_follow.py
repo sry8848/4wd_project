@@ -11,6 +11,8 @@ from src.tasks.line_follow import (
     LineFollower,
     decide_line_action,
     is_at_node,
+    is_centered_line,
+    is_line_seen,
     track_node_check,
 )
 
@@ -56,6 +58,13 @@ class NodeDetectionTest(unittest.TestCase):
     def test_only_inner_sensors_on_black_is_line_not_node(self):
         self.assertFalse(is_at_node(LineReading(False, True, True, False)))
 
+    def test_line_seen_and_centered_line_are_reported_separately(self):
+        reading = LineReading(False, True, True, False)
+
+        self.assertTrue(is_line_seen(reading))
+        self.assertTrue(is_centered_line(reading))
+        self.assertFalse(is_at_node(reading))
+
     def test_track_node_check_reads_sensor_once_and_returns_node_result(self):
         sensor = FakeSensor([LineReading(True, True, True, False)])
 
@@ -95,9 +104,12 @@ class LineFollowerTest(unittest.TestCase):
         motor = FakeMotor()
         follower = LineFollower(sensor, motor, forward_speed=20, turn_speed=70, search_speed=8)
 
-        action = follower.step()
+        result = follower.step()
 
-        self.assertEqual(action, ACTION_FORWARD)
+        self.assertEqual(result.action, ACTION_FORWARD)
+        self.assertFalse(result.is_node)
+        self.assertTrue(result.line_seen)
+        self.assertTrue(result.centered_line)
         self.assertEqual(motor.calls, [("forward", 20, 20)])
 
     def test_step_brakes_when_node_is_detected(self):
@@ -105,9 +117,10 @@ class LineFollowerTest(unittest.TestCase):
         motor = FakeMotor()
         follower = LineFollower(sensor, motor)
 
-        action = follower.step()
+        result = follower.step()
 
-        self.assertEqual(action, ACTION_NODE)
+        self.assertEqual(result.action, ACTION_NODE)
+        self.assertTrue(result.is_node)
         self.assertEqual(motor.calls, [("brake",)])
 
     def test_step_uses_left_turn_speed_for_left_correction(self):

@@ -59,8 +59,29 @@ def parse_args():
     )
     parser.add_argument("--search-speed", type=int, default=8)
     parser.add_argument("--spin-speed", type=int, default=30)
-    parser.add_argument("--turn-seconds", type=float, default=0.5)
-    parser.add_argument("--uturn-seconds", type=float, default=1.2)
+    parser.add_argument(
+        "--turn-seconds",
+        type=float,
+        default=0.5,
+        help="deprecated alias used when --turn-rough-seconds is omitted",
+    )
+    parser.add_argument(
+        "--uturn-seconds",
+        type=float,
+        default=1.2,
+        help="deprecated alias used when --uturn-rough-seconds is omitted",
+    )
+    parser.add_argument("--turn-rough-seconds", type=float, default=None)
+    parser.add_argument("--uturn-rough-seconds", type=float, default=None)
+    parser.add_argument("--leave-node-min-seconds", type=float, default=0.25)
+    parser.add_argument("--node-clear-samples", type=int, default=3)
+    parser.add_argument("--node-confirm-samples", type=int, default=3)
+    parser.add_argument("--node-center-seconds", type=float, default=0.08)
+    parser.add_argument("--obstacle-arm-delay", type=float, default=0.3)
+    parser.add_argument("--obstacle-clear-samples", type=int, default=1)
+    parser.add_argument("--obstacle-confirm-samples", type=int, default=2)
+    parser.add_argument("--line-acquire-timeout", type=float, default=3.0)
+    parser.add_argument("--line-lost-timeout", type=float, default=1.0)
     parser.add_argument("--edge-timeout", type=float, default=5)
     parser.add_argument("--recovery-timeout", type=float, default=5)
     parser.add_argument("--delay", type=float, default=0.02)
@@ -120,6 +141,16 @@ def build_grid(rows, cols):
 
 def main():
     args = parse_args()
+    turn_rough_seconds = (
+        args.turn_rough_seconds
+        if args.turn_rough_seconds is not None
+        else args.turn_seconds
+    )
+    uturn_rough_seconds = (
+        args.uturn_rough_seconds
+        if args.uturn_rough_seconds is not None
+        else args.uturn_seconds
+    )
     grid = build_grid(args.rows, args.cols)
     start = parse_coordinate(args.start)
     end = parse_coordinate(args.end)
@@ -155,7 +186,17 @@ def main():
             line_follower,
             obstacle_sensor=obstacle_sensor,
             turn_speed=args.spin_speed,
-            uturn_seconds=args.uturn_seconds,
+            turn_rough_seconds=turn_rough_seconds,
+            uturn_rough_seconds=uturn_rough_seconds,
+            leave_node_min_seconds=args.leave_node_min_seconds,
+            node_clear_samples=args.node_clear_samples,
+            node_confirm_samples=args.node_confirm_samples,
+            node_center_seconds=args.node_center_seconds,
+            obstacle_arm_delay=args.obstacle_arm_delay,
+            obstacle_clear_samples=args.obstacle_clear_samples,
+            obstacle_confirm_samples=args.obstacle_confirm_samples,
+            line_acquire_timeout=args.line_acquire_timeout,
+            line_lost_timeout=args.line_lost_timeout,
             delay_seconds=args.delay,
         )
         navigator = GridNavigator(
@@ -163,9 +204,6 @@ def main():
             edge_follower,
             motor,
             static_blocked_edges=static_blocked_edges,
-            turn_speed=args.spin_speed,
-            turn_seconds=args.turn_seconds,
-            uturn_seconds=args.uturn_seconds,
             edge_max_seconds=args.edge_timeout,
             recovery_max_seconds=args.recovery_timeout,
         )

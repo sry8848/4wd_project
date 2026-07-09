@@ -1,5 +1,6 @@
 """Line following and node detection task logic."""
 
+from dataclasses import dataclass
 import time
 
 
@@ -8,6 +9,25 @@ ACTION_LEFT = "left"
 ACTION_RIGHT = "right"
 ACTION_SEARCH_LEFT = "search_left"
 ACTION_NODE = "node"
+
+
+@dataclass(frozen=True)
+class LineStepResult:
+    """一次巡线闭环的读数、判断结果和执行动作。
+
+    参数说明：
+    reading: 本次四路巡线传感器读数。
+    action: 根据读数决定并已执行的电机动作。
+    is_node: 本次读数是否满足网格节点判断。
+    line_seen: 四路传感器是否至少一路看到黑线。
+    centered_line: 内侧两路是否同时看到黑线，用于判断是否基本压在线上。
+    """
+
+    reading: object
+    action: str
+    is_node: bool
+    line_seen: bool
+    centered_line: bool
 
 
 def is_at_node(reading):
@@ -21,6 +41,29 @@ def is_at_node(reading):
     return reading.left_inner and reading.right_inner and (
         reading.left_outer or reading.right_outer
     )
+
+
+def is_line_seen(reading):
+    """判断四路巡线传感器是否至少一路看到黑线。
+
+    参数说明：
+    reading: src.hardware.line_sensor.LineReading 实例。
+    """
+    return (
+        reading.left_outer
+        or reading.left_inner
+        or reading.right_inner
+        or reading.right_outer
+    )
+
+
+def is_centered_line(reading):
+    """判断车身是否大致压在普通线中心。
+
+    参数说明：
+    reading: src.hardware.line_sensor.LineReading 实例。
+    """
+    return reading.left_inner and reading.right_inner
 
 
 def track_node_check(sensor):
@@ -94,9 +137,17 @@ class LineFollower:
         """执行一次“读取传感器 -> 判断动作 -> 控制电机”的循迹步骤。
 
         返回值：
-        本次执行的动作字符串，便于上层记录和测试。
+        LineStepResult，包含本次读数、动作和节点/线状态。
         """
         reading = self.sensor.read()
+        return self.apply_reading(reading)
+
+    def apply_reading(self, reading):
+        """根据已读取的传感器结果执行一次巡线动作。
+
+        参数说明：
+        reading: src.hardware.line_sensor.LineReading 实例。
+        """
         action = decide_line_action(reading)
 
         if action == ACTION_NODE:
@@ -128,7 +179,13 @@ class LineFollower:
             )
             self.debug_output.flush()
 
-        return action
+        return LineStepResult(
+            reading=reading,
+            action=action,
+            is_node=is_at_node(reading),
+            line_seen=is_line_seen(reading),
+            centered_line=is_centered_line(reading),
+        )
 
     def run_track(self, max_seconds, delay_seconds=0.02):
         """沿黑线行驶，直到到达节点或超时。
@@ -142,8 +199,8 @@ class LineFollower:
 
         deadline = time.monotonic() + max_seconds
         while time.monotonic() < deadline:
-            action = self.step()
-            if action == ACTION_NODE:
+            result = self.step()
+            if result.is_node:
                 return True
             time.sleep(delay_seconds)
 

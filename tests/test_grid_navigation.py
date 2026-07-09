@@ -1,15 +1,17 @@
 import unittest
 
 from src.tasks.edge_follow import (
-    EDGE_BLOCKED_BEFORE_ENTERING,
-    EDGE_BLOCKED_MID_EDGE,
-    EDGE_REACHED_NODE,
-    EDGE_RECOVERED,
+    EDGE_BLOCKED_ON_PLANNED_EDGE,
+    EDGE_RECOVERED_TO_START_NODE,
     EDGE_RECOVERY_FAILED,
+    EDGE_REACHED_NEXT_NODE,
+    EdgeExecutionResult,
 )
 from src.tasks.grid_navigation import (
     HEADING_EAST,
     HEADING_NORTH,
+    HEADING_SOUTH,
+    HEADING_WEST,
     NAV_ARRIVED,
     NAV_FAILED,
     NAV_NO_PATH,
@@ -32,23 +34,27 @@ class FakeMotor:
 
 
 class FakeEdgeFollower:
-    def __init__(self, follow_results, recover_results=None):
-        self.follow_results = list(follow_results)
-        self.recover_results = list(recover_results or [])
-        self.follow_calls = []
+    def __init__(self, edge_statuses, recovery_statuses=None):
+        self.edge_statuses = list(edge_statuses)
+        self.recovery_statuses = list(recovery_statuses or [])
+        self.execute_calls = []
         self.recover_calls = []
 
-    def follow_edge(self, max_seconds):
-        self.follow_calls.append(max_seconds)
-        if self.follow_results:
-            return self.follow_results.pop(0)
-        return EDGE_REACHED_NODE
+    def execute_planned_edge(self, current_heading, target_heading, max_seconds):
+        self.execute_calls.append((current_heading, target_heading, max_seconds))
+        if self.edge_statuses:
+            status = self.edge_statuses.pop(0)
+        else:
+            status = EDGE_REACHED_NEXT_NODE
+        return EdgeExecutionResult(status=status, final_heading=target_heading)
 
-    def recover_to_start_node(self, max_seconds):
-        self.recover_calls.append(max_seconds)
-        if self.recover_results:
-            return self.recover_results.pop(0)
-        return EDGE_RECOVERY_FAILED
+    def recover_to_start_node(self, return_heading=None, max_seconds=None):
+        self.recover_calls.append((return_heading, max_seconds))
+        if self.recovery_statuses:
+            status = self.recovery_statuses.pop(0)
+        else:
+            status = EDGE_RECOVERY_FAILED
+        return EdgeExecutionResult(status=status, final_heading=return_heading)
 
 
 class FakeClock:
@@ -60,14 +66,21 @@ class FakeClock:
 
 
 class GridNavigatorTest(unittest.TestCase):
-    def build_navigator(self, grid, follow_results, recover_results=None):
+    def build_navigator(
+        self,
+        grid,
+        edge_statuses,
+        recovery_statuses=None,
+        static_blocked_edges=None,
+    ):
         self.motor = FakeMotor()
-        self.edge_follower = FakeEdgeFollower(follow_results, recover_results)
+        self.edge_follower = FakeEdgeFollower(edge_statuses, recovery_statuses)
         self.clock = FakeClock()
         return GridNavigator(
             grid,
             self.edge_follower,
             self.motor,
+            static_blocked_edges=static_blocked_edges,
             turn_speed=40,
             turn_seconds=0.3,
             uturn_seconds=0.7,
@@ -79,28 +92,35 @@ class GridNavigatorTest(unittest.TestCase):
     def test_navigate_reaches_target_without_obstacles(self):
         navigator = self.build_navigator(
             [["A", "A", "A"]],
-            [EDGE_REACHED_NODE, EDGE_REACHED_NODE],
+            [EDGE_REACHED_NEXT_NODE, EDGE_REACHED_NEXT_NODE],
         )
 
         result = navigator.navigate((0, 0), (0, 2), HEADING_EAST)
 
         self.assertEqual(result, NAV_ARRIVED)
         self.assertEqual(navigator.current_node, (0, 2))
-        self.assertEqual(self.edge_follower.follow_calls, [5, 5])
+        self.assertEqual(
+            self.edge_follower.execute_calls,
+            [
+                (HEADING_EAST, HEADING_EAST, 5),
+                (HEADING_EAST, HEADING_EAST, 5),
+            ],
+        )
         self.assertEqual(navigator.dynamic_blocked_edges, set())
 
-    def test_navigate_blocks_edge_and_replans_when_obstacle_is_seen_before_entering(self):
+    def test_navigate_blocks_planned_edge_recovers_then_replans(self):
         navigator = self.build_navigator(
             [
                 ["A", "A"],
                 ["A", "A"],
             ],
             [
-                EDGE_BLOCKED_BEFORE_ENTERING,
-                EDGE_REACHED_NODE,
-                EDGE_REACHED_NODE,
-                EDGE_REACHED_NODE,
+                EDGE_BLOCKED_ON_PLANNED_EDGE,
+                EDGE_REACHED_NEXT_NODE,
+                EDGE_REACHED_NEXT_NODE,
+                EDGE_REACHED_NEXT_NODE,
             ],
+            recovery_statuses=[EDGE_RECOVERED_TO_START_NODE],
         )
 
         result = navigator.navigate((0, 0), (0, 1), HEADING_EAST)
@@ -108,69 +128,62 @@ class GridNavigatorTest(unittest.TestCase):
         self.assertEqual(result, NAV_ARRIVED)
         self.assertEqual(navigator.current_node, (0, 1))
         self.assertIn(frozenset({(0, 0), (0, 1)}), navigator.dynamic_blocked_edges)
-        self.assertEqual(self.edge_follower.follow_calls, [5, 5, 5, 5])
-
-    def test_navigate_recovers_to_current_node_then_replans_after_mid_edge_obstacle(self):
-        navigator = self.build_navigator(
+        self.assertEqual(
+            self.edge_follower.recover_calls,
+            [(HEADING_WEST, 6)],
+        )
+        self.assertEqual(
+            self.edge_follower.execute_calls,
             [
-                ["A", "A"],
-                ["A", "A"],
+                (HEADING_EAST, HEADING_EAST, 5),
+                (HEADING_WEST, HEADING_SOUTH, 5),
+                (HEADING_SOUTH, HEADING_EAST, 5),
+                (HEADING_EAST, HEADING_NORTH, 5),
             ],
-            [
-                EDGE_BLOCKED_MID_EDGE,
-                EDGE_REACHED_NODE,
-                EDGE_REACHED_NODE,
-                EDGE_REACHED_NODE,
-            ],
-            recover_results=[EDGE_RECOVERED],
         )
 
-        result = navigator.navigate((0, 0), (0, 1), HEADING_EAST)
-
-        self.assertEqual(result, NAV_ARRIVED)
-        self.assertEqual(navigator.current_node, (0, 1))
-        self.assertEqual(self.edge_follower.recover_calls, [6])
-        self.assertIn(frozenset({(0, 0), (0, 1)}), navigator.dynamic_blocked_edges)
-
-    def test_navigate_returns_no_path_when_blocking_current_edge_exhausts_routes(self):
-        navigator = self.build_navigator(
-            [["A", "A"]],
-            [EDGE_BLOCKED_BEFORE_ENTERING],
-        )
-
-        result = navigator.navigate((0, 0), (0, 1), HEADING_EAST)
-
-        self.assertEqual(result, NAV_NO_PATH)
-        self.assertEqual(navigator.current_node, (0, 0))
-        self.assertEqual(self.motor.calls[-1], ("brake",))
-
-    def test_navigate_fails_when_mid_edge_recovery_fails(self):
+    def test_navigate_fails_when_recovery_fails_after_dynamic_block(self):
         navigator = self.build_navigator(
             [
                 ["A", "A"],
                 ["A", "A"],
             ],
-            [EDGE_BLOCKED_MID_EDGE],
-            recover_results=[EDGE_RECOVERY_FAILED],
+            [EDGE_BLOCKED_ON_PLANNED_EDGE],
+            recovery_statuses=[EDGE_RECOVERY_FAILED],
         )
 
         result = navigator.navigate((0, 0), (0, 1), HEADING_EAST)
 
         self.assertEqual(result, NAV_FAILED)
         self.assertEqual(navigator.current_node, (0, 0))
-        self.assertEqual(navigator.dynamic_blocked_edges, set())
+        self.assertIn(frozenset({(0, 0), (0, 1)}), navigator.dynamic_blocked_edges)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
-    def test_navigate_turns_right_from_north_to_east_before_following_edge(self):
+    def test_navigate_returns_no_path_when_static_edges_exhaust_routes(self):
         navigator = self.build_navigator(
             [["A", "A"]],
-            [EDGE_REACHED_NODE],
+            [],
+            static_blocked_edges={frozenset({(0, 0), (0, 1)})},
+        )
+
+        result = navigator.navigate((0, 0), (0, 1), HEADING_EAST)
+
+        self.assertEqual(result, NAV_NO_PATH)
+        self.assertEqual(navigator.current_node, (0, 0))
+        self.assertEqual(self.edge_follower.execute_calls, [])
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_navigate_delegates_turning_to_edge_executor(self):
+        navigator = self.build_navigator(
+            [["A", "A"]],
+            [EDGE_REACHED_NEXT_NODE],
         )
 
         result = navigator.navigate((0, 0), (0, 1), HEADING_NORTH)
 
         self.assertEqual(result, NAV_ARRIVED)
-        self.assertEqual(self.motor.calls[:2], [("spin_right", 40, 40), ("brake",)])
+        self.assertEqual(self.edge_follower.execute_calls, [(HEADING_NORTH, HEADING_EAST, 5)])
+        self.assertEqual(self.motor.calls, [("brake",)])
         self.assertEqual(navigator.current_heading, HEADING_EAST)
 
 

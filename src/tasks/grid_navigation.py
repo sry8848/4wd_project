@@ -4,10 +4,9 @@ import time
 
 from src.algorithms.astar import astar
 from src.tasks.edge_follow import (
-    EDGE_BLOCKED_BEFORE_ENTERING,
-    EDGE_BLOCKED_MID_EDGE,
-    EDGE_REACHED_NODE,
-    EDGE_RECOVERED,
+    EDGE_BLOCKED_ON_PLANNED_EDGE,
+    EDGE_REACHED_NEXT_NODE,
+    EDGE_RECOVERED_TO_START_NODE,
 )
 
 
@@ -24,19 +23,18 @@ _HEADINGS = (HEADING_NORTH, HEADING_EAST, HEADING_SOUTH, HEADING_WEST)
 
 
 class GridNavigator:
-    """维护网格点到点导航状态，并在遇障碍时封边重规划。
+    """Maintain trusted grid position and re-plan when an edge is blocked.
 
-    参数说明：
-    grid: A* 使用的矩形地图，"A" 表示可走，"X" 表示节点障碍。
-    edge_follower: 执行单条边的对象，通常是 EdgeFollower。
-    motor: 电机对象，提供 spin_left/spin_right/brake。
-    static_blocked_edges: 已知不可通行边集合。
-    turn_speed: 原地转向时左右电机 PWM 占空比。
-    turn_seconds: 90 度转向持续时间。
-    uturn_seconds: 180 度转向持续时间。
-    edge_max_seconds: 执行一条边的超时秒数。
-    recovery_max_seconds: 中途障碍后回到上一节点的超时秒数。
-    sleep_fn: 等待函数，实机默认 time.sleep，测试可注入。
+    Parameters:
+    grid: Rectangular A* grid where "A" is passable and "X" is a node obstacle.
+    edge_follower: Edge executor with execute_planned_edge() and
+        recover_to_start_node().
+    motor: Motor object used for final safety braking.
+    static_blocked_edges: Known blocked undirected edges before navigation.
+    turn_speed/turn_seconds/uturn_seconds/sleep_fn: Kept for older callers; edge
+        turning is now handled by EdgeFollower.
+    edge_max_seconds: Timeout for one planned edge execution.
+    recovery_max_seconds: Timeout for returning to the start node after a block.
     """
 
     def __init__(
@@ -68,15 +66,15 @@ class GridNavigator:
         self.current_heading = None
 
     def navigate(self, start, end, initial_heading):
-        """从 start 导航到 end，返回导航结果状态。
+        """Navigate from start to end using trusted-node state transitions.
 
-        参数说明：
-        start: 起点坐标，格式为 (row, col)。
-        end: 终点坐标，格式为 (row, col)。
-        initial_heading: 初始朝向，必须是 north/east/south/west 之一。
+        Parameters:
+        start: Start coordinate as (row, col).
+        end: Target coordinate as (row, col).
+        initial_heading: Trusted heading at the start node.
         """
         if initial_heading not in _HEADINGS:
-            raise ValueError("initial_heading 必须是 north/east/south/west")
+            raise ValueError("initial_heading must be north/east/south/west")
 
         self.current_node = start
         self.target_node = end
@@ -96,28 +94,35 @@ class GridNavigator:
 
             next_node = path[1]
             target_heading = _heading_between(self.current_node, next_node)
-            self._turn_to_heading(target_heading)
+            planned_edge = frozenset({self.current_node, next_node})
 
-            edge_result = self.edge_follower.follow_edge(self.edge_max_seconds)
-            current_edge = frozenset({self.current_node, next_node})
+            edge_result = self.edge_follower.execute_planned_edge(
+                self.current_heading,
+                target_heading,
+                self.edge_max_seconds,
+            )
+            edge_status = _result_status(edge_result)
 
-            if edge_result == EDGE_REACHED_NODE:
+            if edge_status == EDGE_REACHED_NEXT_NODE:
                 self.current_node = next_node
+                self.current_heading = target_heading
                 continue
 
-            if edge_result == EDGE_BLOCKED_BEFORE_ENTERING:
-                self.dynamic_blocked_edges.add(current_edge)
-                continue
-
-            if edge_result == EDGE_BLOCKED_MID_EDGE:
+            if edge_status == EDGE_BLOCKED_ON_PLANNED_EDGE:
+                self.dynamic_blocked_edges.add(planned_edge)
+                return_heading = _opposite_heading(target_heading)
                 recovery_result = self.edge_follower.recover_to_start_node(
-                    self.recovery_max_seconds
+                    return_heading=return_heading,
+                    max_seconds=self.recovery_max_seconds,
                 )
-                if recovery_result != EDGE_RECOVERED:
+                if _result_status(recovery_result) != EDGE_RECOVERED_TO_START_NODE:
                     self.motor.brake()
                     return NAV_FAILED
 
-                self.dynamic_blocked_edges.add(current_edge)
+                self.current_heading = _result_final_heading(
+                    recovery_result,
+                    default=return_heading,
+                )
                 continue
 
             self.motor.brake()
@@ -129,32 +134,22 @@ class GridNavigator:
     def _all_blocked_edges(self):
         return self.static_blocked_edges | self.dynamic_blocked_edges
 
-    def _turn_to_heading(self, target_heading):
-        current_index = _HEADINGS.index(self.current_heading)
-        target_index = _HEADINGS.index(target_heading)
-        diff = (target_index - current_index) % len(_HEADINGS)
 
-        if diff == 1:
-            self._spin_right(self.turn_seconds)
-        elif diff == 2:
-            self._spin_left(self.uturn_seconds)
-        elif diff == 3:
-            self._spin_left(self.turn_seconds)
+def _result_status(result):
+    return result.status if hasattr(result, "status") else result
 
-        self.current_heading = target_heading
 
-    def _spin_left(self, seconds):
-        self.motor.spin_left(self.turn_speed, self.turn_speed)
-        self._sleep(seconds)
-        self.motor.brake()
-
-    def _spin_right(self, seconds):
-        self.motor.spin_right(self.turn_speed, self.turn_speed)
-        self._sleep(seconds)
-        self.motor.brake()
+def _result_final_heading(result, default=None):
+    return getattr(result, "final_heading", None) or default
 
 
 def _heading_between(current_node, next_node):
+    """Return the heading needed to move between adjacent grid nodes.
+
+    Parameters:
+    current_node: Current coordinate as (row, col).
+    next_node: Adjacent coordinate as (row, col).
+    """
     current_row, current_col = current_node
     next_row, next_col = next_node
 
@@ -167,4 +162,16 @@ def _heading_between(current_node, next_node):
     if next_col == current_col - 1 and next_row == current_row:
         return HEADING_WEST
 
-    raise ValueError("current_node 和 next_node 必须相邻")
+    raise ValueError("current_node and next_node must be adjacent")
+
+
+def _opposite_heading(heading):
+    """Return the opposite compass heading.
+
+    Parameters:
+    heading: One of north/east/south/west.
+    """
+    if heading not in _HEADINGS:
+        raise ValueError("heading must be north/east/south/west")
+
+    return _HEADINGS[(_HEADINGS.index(heading) + 2) % len(_HEADINGS)]
