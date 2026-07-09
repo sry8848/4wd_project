@@ -1,312 +1,551 @@
-# 网格导航功能模块与执行路径说明
+# 网格导航新状态机设计说明
 
-本文说明“黑线网格点到点导航 + 当前边障碍重规划 + 中途障碍掉头回节点恢复”的模块分工和运行路径。
+本文定义网格导航、巡线入点、动态障碍封边和回节点恢复的目标设计。后续代码和实机验收以本文为准。
 
-当前仓库已经具备 A*、基础巡线、电机驱动、超声波测距、倒车雷达、边执行器和网格导航状态机等能力。
+## 1. 目标与边界
 
-## 1. 功能口径
+目标场景是正交黑线网格上的点到点导航：
 
-- 地面是正交黑线网格，节点是十字路口，节点之间是一条可巡线的黑线边。
-- 外框黑线默认也是可行驶路径；地图外不可走。
-- 起点、终点、当前位置都用网格节点坐标表示，内部坐标格式为 `(row, col)`。
-- 展示给人看时可以把 `(0, 0)` 显示为 `A1`，`(0, 1)` 显示为 `A2`，`(1, 0)` 显示为 `B1`。
-- 障碍只支持挡住“当前准备进入的下一条边”，不支持任意位置障碍、视觉建图或 SLAM。
-- 中途遇到障碍时，采用“原地掉头 + 正向巡线回上一节点”，不是倒车退回。
-- 倒车雷达是提示能力，不等同于倒车回节点能力，不并入第一版主导航执行路径。
+- 节点是十字交叉点，边是两个相邻节点之间的一条黑线。
+- 当前位置、起点和终点都用节点坐标表示，例如 `A1`、`A2`、`B2`。
+- A* 只规划网格路径，不直接控制车。
+- 障碍只表示“当前计划边不可通行”，不表示某个节点永久不可走。
+- 不做视觉定位、SLAM、任意障碍识别或真实坐标测量。
+- 实车没有编码器和节点编号识别能力，因此只有“稳定进入可信节点”时，软件坐标才可信。
 
-## 2. 已有模块
+核心原则：
 
-### 2.1 `src/config.py`
-
-集中保存非敏感硬件配置。
-
-- 电机引脚：`MOTOR_IN1`、`MOTOR_IN2`、`MOTOR_IN3`、`MOTOR_IN4`、`MOTOR_ENA`、`MOTOR_ENB`。
-- 超声波配置：`ULTRASONIC_TRIG`、`ULTRASONIC_ECHO`、`ULTRASONIC_THRESHOLD`、`ULTRASONIC_TIMEOUT`、`ULTRASONIC_SAMPLES`。
-- 四路巡线传感器：`LINE_SENSOR_LEFT_OUTER_PIN`、`LINE_SENSOR_LEFT_INNER_PIN`、`LINE_SENSOR_RIGHT_INNER_PIN`、`LINE_SENSOR_RIGHT_OUTER_PIN`。
-- 黑线电平：`LINE_SENSOR_BLACK_VALUE`。
-
-配置层只表达硬件事实，不写业务流程。后续网格导航只读取这些配置，不应该在任务层重复定义 GPIO 引脚。
-
-### 2.2 `src/algorithms/astar.py`
-
-当前已实现二维矩形网格 A*，并支持节点障碍和边障碍。
-
-- `PASSABLE = "A"`：可通行节点。
-- `OBSTACLE = "X"`：不可通行节点。
-- `Node`：A* 搜索节点，保存 `position`、`parent`、`g`、`h`。
-- `heuristic(a, b)`：计算曼哈顿距离。
-- `astar(grid, start, end, blocked_edges=None)`：根据节点障碍和可选边障碍规划路径。
-- `grid_to_string(grid)`：把网格转成适合打印的字符串。
-- `format_path(path)`：把 `(row, col)` 路径转成 `A1` 这类展示文本。
-
-边障碍接口是：
-
-```python
-astar(grid, start, end, blocked_edges=None)
+```text
+只有在可信节点上才能选边。
+只有稳定进入下一个节点后才能更新 current_node。
+只有边中稳定巡线时才能把 planned_edge 封锁。
+转向、出点、找线、恢复期间都不能根据超声封新边。
 ```
 
-其中 `blocked_edges` 表示不可通行边，例如：
+## 2. 模块职责
+
+### 2.1 不改职责的模块
+
+`src/config.py`
+
+- 保存 GPIO BCM 编号、PWM 频率、阈值等非敏感配置。
+- 不写路径规划、巡线动作或障碍处理流程。
+
+`src/algorithms/astar.py`
+
+- 继续负责矩形网格 A*。
+- 输入：`grid`、`start`、`end`、`blocked_edges`。
+- 输出：节点路径，例如 `[(0, 1), (1, 1), (1, 2), (0, 2)]`。
+- `blocked_edges` 仍使用无向边：`frozenset({A2, A3})`。
+
+`src/hardware/line_sensor.py`
+
+- 只负责读取四路巡线传感器并返回 `LineReading`。
+- 不判断坐标、不封边、不控制电机。
+
+`src/hardware/motor.py`
+
+- 只封装 `forward`、`left`、`right`、`spin_left`、`spin_right`、`brake`、`close`。
+- 不知道网格、节点、障碍或 A*。
+
+`src/hardware/ultrasonic.py`
+
+- 只负责测距和后台更新 `obstacle_detected`、`last_distance`。
+- 超声模块本身不知道障碍属于哪条边。
+- 是否相信缓存、什么时候封边，由边执行状态机决定。
+
+### 2.2 需要按新口径调整的模块
+
+`src/tasks/line_follow.py`
+
+- 继续提供基础巡线动作判断。
+- 需要把“读数、动作、是否节点、是否看到线”一起返回给上层。
+- 不决定坐标、不决定封边、不决定 A*。
+
+建议结果对象：
 
 ```python
-{
-    frozenset({(0, 0), (0, 1)}),
-    frozenset({(1, 1), (2, 1)}),
-}
+class LineStepResult:
+    reading: LineReading
+    action: str
+    is_node: bool
+    line_seen: bool
+    centered_line: bool
 ```
 
-边按无向处理：`(0, 0) -> (0, 1)` 堵住时，反向也不可走。这样比把下一个节点直接改成 `X` 更准确，因为障碍挡的是路段，不一定挡住节点本身。
+`src/tasks/edge_follow.py`
 
-### 2.3 `src/hardware/line_sensor.py`
+- `follow_edge()` / `recover_to_start_node()` 的目标语义由边执行器状态机承载。
+- 可以保留文件名和对外类名以减少迁移成本，但内部必须按新状态机组织。
+- 边执行器只执行“从当前可信节点尝试走向计划相邻节点”。
+- 边执行器不调用 A*，不修改全局地图。
 
-封装四路红外巡线传感器读取，不控制电机。
-
-- `LineReading`：归一化读数，四个字段表示对应传感器是否检测到黑线。
-- `LineReading.from_gpio_values(...)`：把 GPIO 原始电平转换成布尔读数。
-- `LineSensor.read()`：读取一次四路传感器状态。
-- `LineSensor.close()`：释放巡线传感器 GPIO。
-
-这个模块是硬件边界。上层任务不能直接 `GPIO.input()` 读取巡线引脚，应通过 `LineSensor.read()` 获取读数。
-
-### 2.4 `src/tasks/line_follow.py`
-
-封装基础巡线策略和节点检测。
-
-- `is_at_node(reading)`：判断当前读数是否表示到达网格节点。
-- `track_node_check(sensor)`：读取一次传感器并判断是否到达节点。
-- `decide_line_action(reading)`：根据四路读数决定 `forward`、`left`、`right`、`search_left` 或 `node`。
-- `LineFollower.step()`：执行一次“读取传感器 -> 判断动作 -> 控制电机”。
-- `LineFollower.run_track(max_seconds, delay_seconds=0.02)`：沿线行驶，直到检测到节点或超时。
-- `LineFollower(..., debug_output=None)`：可选调试输出流；实机入口传入 `--line-debug` 时，每轮打印四路读数、节点判断、动作和电机命令。
-
-`LineFollower` 只知道如何沿黑线走和如何识别节点，不知道当前坐标、下一节点、A* 路径或障碍地图。完整网格导航不能把坐标状态塞进这里，否则巡线层会和导航层耦合。
-
-### 2.5 `src/hardware/motor.py`
-
-封装底盘运动。
-
-- `MotorController.forward(left_speed, right_speed)`：左右电机前进。
-- `MotorController.backward(left_speed, right_speed)`：左右电机后退。
-- `MotorController.left(left_speed, right_speed)`：普通左转。
-- `MotorController.right(left_speed, right_speed)`：普通右转。
-- `MotorController.spin_left(left_speed, right_speed)`：原地左旋。
-- `MotorController.spin_right(left_speed, right_speed)`：原地右旋。
-- `MotorController.brake()`：停车。
-- `MotorController.close()`：释放资源。
-
-导航任务只调用这些动作接口，不直接操作电机 GPIO。任何失败、异常、超时或 Ctrl+C 都必须最终触发 `brake()`。
-
-### 2.6 `src/hardware/ultrasonic.py`
-
-封装超声波测距，不控制电机。
-
-- `UltrasonicSensor.read_distance()`：单次测距。
-- `UltrasonicSensor.read_filtered()`：多次采样取中位数。
-- `UltrasonicSensor.is_obstructed(distance=None)`：判断距离是否低于障碍阈值。
-- `UltrasonicSensor.start_monitoring()` / `stop_monitoring()`：后台监测。
-- `UltrasonicSensor.close()`：停止监测并释放 GPIO。
-
-第一版网格导航只需要在“准备进入下一条边前”和“沿边行驶过程中”读取前方是否被挡。超声波只产生障碍事实，不负责决定怎么转弯、封边或重规划。
-
-实机入口启用超声时，会先调用 `UltrasonicSensor.start_monitoring()`，再通过 `CachedObstacleSensor` 把后台缓存的 `obstacle_detected` 暴露给 `EdgeFollower`。这样边执行循环只读取缓存值，不在每个巡线 step 前同步测距。
-
-### 2.7 `src/tasks/reverse_radar.py`
-
-封装倒车雷达提示。
-
-- `ReverseRadar.radar_beep(distance_cm)`：按距离改变蜂鸣提示频率。
-- `ReverseRadar.start()` / `stop()`：后台循环测距和提示。
-- `ReverseRadar.close()`：停止并释放蜂鸣器、超声波资源。
-
-倒车雷达的本质是“距离 -> 蜂鸣提示”。如果超声波安装在车头，它不能保证车尾倒退安全。因此本文中的“回上一节点”采用掉头后正向巡线，不依赖倒车雷达。
-
-## 3. 网格导航模块
-
-### 3.1 `src/tasks/edge_follow.py`
-
-`EdgeFollower` 的职责是执行一条网格边：从当前节点沿黑线走到相邻节点。
-
-主要接口：
+建议核心接口：
 
 ```python
-class EdgeFollower:
-    # CachedObstacleSensor 也定义在本模块，用于读取超声后台缓存。
-    def follow_edge(self, max_seconds):
+class EdgeExecutor:
+    def execute_planned_edge(self, target_heading, max_seconds):
         ...
 
-    def recover_to_start_node(self, max_seconds):
+    def recover_to_start_node(self, return_heading, max_seconds):
         ...
 ```
 
-`follow_edge()` 的核心流程：
+`src/tasks/grid_navigation.py`
 
-1. 进入边前读取缓存的障碍状态，判断前方是否有障碍。
-2. 如果有障碍，立即返回 `blocked_before_entering`，不进入该边。
-3. 先离开当前十字节点，再开始识别下一个节点，避免把起点误判成终点。
-4. 循环调用 `LineFollower.step()` 做基础巡线。
-5. 循环中持续读取缓存障碍状态、节点检测和超时。
-6. 到达下一个节点时停车，返回 `reached_node`。
-7. 中途遇障碍时停车，返回 `blocked_mid_edge`。
-8. 超时、丢线或异常时停车，返回失败状态。
+- 只维护地图状态：`current_node`、`target_node`、`current_heading`、`dynamic_blocked_edges`。
+- 只在可信节点上调用 A* 选边。
+- 只根据边执行结果更新坐标、朝向和封锁边。
 
-`recover_to_start_node()` 的核心流程：
+## 3. 关键概念
 
-1. 原地掉头。
-2. 使用正向巡线能力沿原边返回上一节点。
-3. 到达上一节点后停车。
-4. 再次掉头，恢复准备重新规划的朝向。
-5. 成功回到可信节点时返回成功；失败时返回失败，导航层不得更新当前位置。
+### 3.1 可信节点
 
-`EdgeFollower` 不保存全局地图，不调用 A*。它只负责“这一条边能不能安全走完”。
+可信节点是软件允许认为“车就在这个网格点”的唯一状态。
 
-### 3.2 `src/tasks/grid_navigation.py`
+满足条件：
 
-`GridNavigator` 的职责是完整网格导航状态机。
+- 已经完成入点确认。
+- 车在节点附近停车。
+- 上一次边执行结果明确返回“到达计划节点”或“恢复回起点节点”。
 
-主要接口：
+不可信状态：
+
+- 转向中。
+- 出点中。
+- 边中巡线。
+- 找线中。
+- 遇障碍后恢复中。
+- 超时、丢线或转向失败后。
+
+### 3.2 计划边
+
+计划边由导航层在可信节点上确定：
+
+```text
+planned_edge = frozenset({current_node, next_node})
+```
+
+超声只产生“车头前方近距离有物体”的事实，不知道 `A2-A3`、`A2-B2` 这些边名。封哪条边完全由当前 `planned_edge` 决定。
+
+因此必须保证：只有当车辆已经稳定进入 `planned_edge` 的边中巡线阶段时，才能相信超声并封这条边。
+
+### 3.3 超声缓存门控
+
+后台超声缓存可能滞后，也可能在转向时扫到上一条边附近的障碍。不要直接清空 `ultrasonic.obstacle_detected`，而应在边执行器里做门控。
+
+建议门控对象：
 
 ```python
-class GridNavigator:
-    def navigate(self, start, end, initial_heading):
+class ObstacleGate:
+    def start_edge(self):
+        self.hit_count = 0
+        self.safe_count = 0
+        self.started_at = time.monotonic()
+
+    def check_blocked(self):
         ...
 ```
 
-`GridNavigator` 保存以下状态：
+新边开始后，障碍门控必须重新计数：
 
-- `current_node`：当前可信节点。
-- `target_node`：终点。
-- `current_heading`：当前朝向，建议使用 `north`、`south`、`east`、`west`。
-- `static_blocked_edges`：已知不可通行边。
-- `dynamic_blocked_edges`：运行中发现的障碍边。
-- `grid`：节点地图，仍支持 `"A"` 和 `"X"`。
+- 转向、出点、找线、恢复阶段不读超声。
+- 进入边中后先等待 `arm_delay`。
+- 或者先要求连续 `safe_clear_samples` 次读到安全。
+- 之后连续 `obstacle_confirm_samples` 次读到障碍，才确认当前计划边被挡。
 
-`GridNavigator` 的职责：
-
-- 调用 A* 规划从当前节点到终点的路径。
-- 根据当前节点和下一节点计算目标朝向。
-- 调用电机完成转向。
-- 调用 `EdgeFollower.follow_edge()` 执行下一条边。
-- 遇到障碍时把当前边加入 `dynamic_blocked_edges`。
-- 必要时重新调用 A*。
-- 只有到达可信节点后，才更新 `current_node`。
-- 无路可走、恢复失败、丢线或超时时停车并返回失败。
-
-## 4. 完整执行路径
-
-### 4.1 正常无障碍路径
+推荐演示参数：
 
 ```text
-入口工具解析参数
--> 创建 MotorController / LineSensor / LineFollower / UltrasonicSensor / CachedObstacleSensor / EdgeFollower / GridNavigator
--> UltrasonicSensor.start_monitoring() 后台更新 obstacle_detected
--> GridNavigator.navigate(start, end, initial_heading)
--> A* 规划路径
--> 取下一节点
--> 根据 current_node 和 next_node 计算目标朝向
--> MotorController.spin_left 或 spin_right 完成转向
--> EdgeFollower.follow_edge()
-   -> 进入边前读取缓存障碍状态，确认无障碍
-   -> 离开当前十字节点
-   -> LineFollower.step() 循环巡线
-   -> 检测到下一个十字节点
-   -> brake()
--> GridNavigator 更新 current_node
--> 重复直到 current_node == end
--> 停车并返回成功
+obstacle_arm_delay = 0.3 ~ 0.5 秒
+safe_clear_samples = 1 ~ 2
+obstacle_confirm_samples = 2 ~ 3
+threshold = 12 ~ 15 cm
 ```
 
-### 4.2 进入边前发现障碍
+## 4. 新状态机
+
+网格导航分两层状态机：
+
+- `GridNavigator`：节点级状态机，只管选边和地图。
+- `EdgeExecutor`：边级状态机，只管执行当前计划边。
+
+### 4.1 节点级状态机
 
 ```text
-当前在 A1，计划走向 A2
--> 转向到 A1->A2
--> EdgeFollower.follow_edge()
-   -> CachedObstacleSensor.is_obstructed() == True
-   -> 不进入该边，brake()
-   -> 返回 blocked_before_entering
--> GridNavigator 把 frozenset({A1, A2}) 加入 dynamic_blocked_edges
--> 从 A1 重新调用 A*
--> 如果有新路径，继续执行
--> 如果无路可走，停车并返回失败
+AT_NODE
+  -> 调用 A* 规划 current_node 到 target_node
+  -> 取 path[1] 作为 next_node
+  -> 生成 planned_edge
+  -> 计算 target_heading
+  -> 调用 EdgeExecutor.execute_planned_edge()
+
+EDGE_RESULT: reached_next_node
+  -> current_node = next_node
+  -> current_heading = target_heading
+  -> 回到 AT_NODE
+
+EDGE_RESULT: blocked_on_planned_edge
+  -> dynamic_blocked_edges.add(planned_edge)
+  -> 调用 EdgeExecutor.recover_to_start_node()
+
+RECOVERY_RESULT: recovered_to_start_node
+  -> current_node 不变
+  -> current_heading = opposite(target_heading)
+  -> 回到 AT_NODE，重新 A*
+
+任意失败
+  -> brake()
+  -> 返回 failed
 ```
 
-### 4.3 边中途发现障碍
+注意：遇到中途障碍时，`current_node` 不更新为 `next_node`。恢复成功后，车头朝向是返回方向，不再盲目二次掉头。
+
+### 4.2 边级状态机
 
 ```text
-当前在 A1，正在走向 A2
--> 超声后台监控把 obstacle_detected 更新为 True
--> 巡线过程中 EdgeFollower 读取缓存发现障碍
--> EdgeFollower 立即 brake()
--> 返回 blocked_mid_edge
--> GridNavigator 调用 recover_to_start_node()
-   -> 原地掉头
-   -> 正向巡线回 A1
-   -> 到达 A1 后停车
-   -> 再次掉头恢复面向 A2 的方向
--> 恢复成功后，封锁 frozenset({A1, A2})
--> 从 A1 重新 A*
--> 恢复失败时，当前位置不可信，停车并返回失败
+ALIGN_TO_EDGE
+  粗转到目标方向
+  不读超声
+  不认节点
+  不封边
+
+LEAVE_NODE
+  受保护出点
+  向目标方向慢速驶出交叉口
+  用巡线传感器确认离开节点并进入目标边
+  不读超声
+  不认下一个节点
+
+EDGE_TRAVEL
+  正常巡线
+  允许障碍门控检查 current planned_edge
+  允许入点确认
+
+EDGE_BLOCKED
+  确认障碍后停车
+  返回 blocked_on_planned_edge
+
+RECOVER_TO_NODE
+  掉头回原节点
+  不读超声
+  不封新边
+  稳定入点后返回 recovered_to_start_node
+
+FAILED
+  超时、丢线、转向失败或恢复失败
 ```
 
-### 4.4 状态机
+### 4.3 Mermaid 状态图
 
 ```mermaid
 flowchart TD
-    A["PLAN: 从当前节点规划到终点"] --> B{"找到路径?"}
-    B -- "否" --> Z["FAILED: 停车并报告无路可走"]
-    B -- "是" --> C["TURN: 转向下一条边"]
-    C --> D["CHECK: 进入边前读取缓存障碍状态"]
-    D -- "有障碍" --> H["MARK_EDGE_BLOCKED: 封锁当前边"]
-    H --> A
-    D -- "无障碍" --> E["FOLLOW: 巡线执行当前边"]
-    E -- "到达下个节点" --> F["UPDATE_NODE: 更新当前位置"]
-    F --> G{"是否到达终点?"}
-    G -- "是" --> Y["ARRIVED: 停车并返回成功"]
-    G -- "否" --> A
-    E -- "中途障碍" --> I["RECOVER: 掉头正向巡线回上一节点"]
-    I -- "恢复成功" --> H
-    I -- "恢复失败" --> Z
-    E -- "超时/丢线/异常" --> Z
+    A["AT_NODE: current_node 可信"] --> B["PLAN_EDGE: A* 选 next_node"]
+    B --> C["ALIGN_TO_EDGE: 粗转到目标方向"]
+    C --> D["LEAVE_NODE: 受保护出点"]
+    D --> E["EDGE_TRAVEL: 边中巡线"]
+    E -- "稳定入点" --> F["REACHED_NEXT_NODE: 更新 current_node"]
+    F --> A
+    E -- "障碍门控确认" --> G["EDGE_BLOCKED: 封 planned_edge"]
+    G --> H["RECOVER_TO_NODE: 掉头回原节点"]
+    H -- "恢复成功" --> I["BACK_AT_NODE: current_node 不变, heading 反向"]
+    I --> A
+    C -- "转向失败" --> Z["FAILED: 停车"]
+    D -- "出点失败" --> Z
+    E -- "丢线/超时" --> Z
+    H -- "恢复失败" --> Z
 ```
 
-## 5. 安全与边界契约
+## 5. 转向与目标线确认
 
-- 所有运动循环必须有 `max_seconds`，不能无限行驶。
-- 任何失败状态必须先 `brake()`，再返回。
-- 入口层用 `try / finally` 统一关闭硬件对象。
-- 组合任务中不要中途调用某个硬件对象的 `close()`，避免清理掉其它模块仍在使用的 GPIO。
-- 只有位于可信节点时，`GridNavigator` 才允许更新 `current_node`。
-- 中途遇障碍时，恢复成功前不能更新位置，也不能继续规划。
-- 障碍边只写入 `blocked_edges`，不要直接把下一个节点改成 `"X"`。
-- 地图外边界由矩形 `grid` 控制；外框黑线默认可走。
-- 如果实机证明节点检测不稳定，应先调整 `is_at_node()` 和离开节点逻辑，再扩大测试范围。
+### 5.1 为什么不能只靠固定时间
 
-## 6. 测试与验收建议
+固定时间转向会累积误差。车轮阻力、地面摩擦、电量和左右轮差异都会让 90 度或 180 度转向不稳定。
 
-### 6.1 本地单元测试
+### 5.2 为什么不能在交叉点中心直接用传感器找线
 
-- A* 能在无 `blocked_edges` 时保持现有路径规划行为。
-- A* 能绕开 `blocked_edges`。
-- A* 拒绝非相邻节点组成的封锁边。
-- `EdgeFollower.follow_edge()` 在进入边前遇障碍时，不调用前进动作，直接返回 `blocked_before_entering`。
-- `EdgeFollower.follow_edge()` 在中途遇障碍时，停车并返回 `blocked_mid_edge`。
-- `GridNavigator.navigate()` 在进入边前遇障碍时，封锁当前边并重新规划。
-- `GridNavigator.navigate()` 在中途障碍恢复成功后，从上一节点重新规划。
-- `GridNavigator.navigate()` 在恢复失败或无路可走时停车并返回失败。
+车停在十字交叉点中心时，四路传感器可能同时压到黑线。此时无论车头朝哪个方向，读数都可能像“节点”，无法可靠区分目标边是哪一条。
 
-### 6.2 实机测试顺序
+所以新版转向不是“原地一直转到看到线”，而是：
 
-1. 只读测试巡线传感器，确认黑线和白底读数正确。
-2. 低速短时测试电机方向，确认 `forward`、`spin_left`、`spin_right` 与实际动作一致。
-3. 只读测试超声波，确认阈值能稳定区分障碍。
-4. 单独测试 `LineFollower.run_track()`，确认能从一个节点走到下一个节点。
-5. 测试无障碍点到点导航。
-6. 在当前下一条边前方放置障碍，测试进入边前封边重规划。
-7. 在边中途放置障碍，测试掉头回上一节点、封边、重规划。
-8. 人为封住所有可行边，确认小车停车并报告无路可走。
+```text
+时间粗转
+-> 受保护出点
+-> 在离开十字中心后，用传感器确认进入目标边
+```
 
-成功标准必须是可观察结果：
+### 5.3 推荐转向流程
 
-- 小车没有障碍时能按 A* 路径到达终点。
-- 小车遇到当前边障碍时不继续撞入障碍，而是封边重规划。
-- 小车中途遇障碍时能回到上一节点；回不去时必须停车失败。
-- 任何 Ctrl+C、超时、丢线、异常都不会让电机继续转动。
+`ALIGN_TO_EDGE`：
+
+1. 根据 `current_heading` 和 `target_heading` 计算左转、右转或掉头。
+2. 按对应方向粗转一小段时间。
+3. 粗转期间不读超声、不封边、不认节点。
+4. 粗转完成后停车，进入 `LEAVE_NODE`。
+
+`LEAVE_NODE`：
+
+1. 慢速前进驶出当前十字口。
+2. 如果仍然是节点读数，继续出点，不允许入点。
+3. 连续 `node_clear_samples` 次不是节点，才认为离开当前节点。
+4. 离开节点后要求看到目标边的线形态，例如内侧至少一路看到线，最好逐步收敛到内侧两路居中。
+5. 如果全白丢线，进入受限找线；找线阶段仍不读超声。
+
+推荐参数：
+
+```text
+turn_rough_seconds_90 = 0.35 ~ 0.70 秒
+turn_rough_seconds_180 = 0.80 ~ 1.40 秒
+leave_node_min_seconds = 0.20 ~ 0.40 秒
+node_clear_samples = 3
+line_acquire_timeout = 2 ~ 4 秒
+```
+
+## 6. 出点逻辑
+
+出点是从可信节点进入计划边的保护阶段。
+
+出点阶段禁止：
+
+- 根据超声封边。
+- 把任何节点读数当作下一节点。
+- 更新 `current_node`。
+
+出点成功条件：
+
+```text
+已经执行最短出点时间
+并且连续 node_clear_samples 次读数不是节点
+并且巡线传感器看到可跟踪的线
+```
+
+如果出点时仍然全白，应短时间按目标方向小幅找线。找线成功后继续；找线超时则返回失败，不更新坐标。
+
+## 7. 边中巡线逻辑
+
+边中巡线是唯一允许动态超声封边的阶段。
+
+每轮循环：
+
+1. 读取巡线传感器。
+2. 执行基础巡线动作。
+3. 如果处于稳定跟线状态，调用障碍门控。
+4. 如果障碍门控确认，返回 `blocked_on_planned_edge`。
+5. 如果稳定检测到节点，返回 `reached_next_node`。
+6. 如果丢线超过 `line_lost_timeout`，返回失败。
+
+找线期间不封边。原因是找线时车头方向不可信，超声看到的物体不一定属于当前计划边。
+
+## 8. 入点逻辑
+
+入点是坐标更新的唯一依据。
+
+当前节点判断仍可沿用：
+
+```text
+LI = 1
+RI = 1
+并且 LO = 1 或 RO = 1
+```
+
+也就是：
+
+```python
+left_inner and right_inner and (left_outer or right_outer)
+```
+
+但新版不能“一次 node=1 就到点”。必须满足：
+
+```text
+已经完成出点
+已经处于 EDGE_TRAVEL
+不是找线状态
+连续 node_confirm_samples 次检测到节点
+```
+
+确认后可以轻推居中：
+
+```text
+node_center_seconds = 0.05 ~ 0.15 秒
+```
+
+然后停车并返回 `reached_next_node`。只有这时 `GridNavigator` 才能执行：
+
+```python
+current_node = next_node
+current_heading = target_heading
+```
+
+## 9. 障碍封边逻辑
+
+新版不使用“进入边前超声封边”作为默认动态障碍逻辑。进入边前只由 A* 避开已知 `blocked_edges`。
+
+动态障碍封边只发生在：
+
+```text
+EDGE_TRAVEL
+且 planned_edge 已确定
+且出点已经完成
+且障碍门控已 armed
+且连续确认障碍
+```
+
+封边流程：
+
+```text
+确认障碍
+-> brake()
+-> dynamic_blocked_edges.add(planned_edge)
+-> 返回 blocked_on_planned_edge
+-> 进入恢复
+```
+
+如果 `dynamic_blocked_edges=3`，说明程序在三条不同的计划边上都确认过障碍。新版通过“出点后才 armed、先清安全缓存、连续确认”降低误封概率。
+
+## 10. 恢复回节点逻辑
+
+中途确认障碍后，恢复目标是回到障碍边的起点节点，而不是继续探索。
+
+恢复阶段：
+
+1. 停车。
+2. 按反方向粗转。
+3. 受保护进入原线。
+4. 沿原线回起点节点。
+5. 稳定入点确认。
+6. 停车。
+7. 返回 `recovered_to_start_node`。
+
+恢复阶段禁止：
+
+- 根据超声封边。
+- 把中途擦到的线当成新节点。
+- 调用 A*。
+- 成功后盲目二次掉头。
+
+恢复成功后：
+
+```text
+current_node 不变
+current_heading = opposite(target_heading)
+```
+
+例如当前计划是 `A2 -> A3`，目标朝向是 east。中途障碍后掉头回到 `A2`，车头朝 west。导航层下一轮从 `A2`、heading=west 重新 A*。
+
+## 11. 建议返回值
+
+边执行器建议返回结构化结果，而不是只返回字符串：
+
+```python
+class EdgeExecutionResult:
+    status: str
+    final_heading: str | None
+    reason: str | None
+```
+
+推荐状态：
+
+```text
+reached_next_node
+blocked_on_planned_edge
+recovered_to_start_node
+turn_failed
+leave_node_failed
+line_lost
+timeout
+recovery_failed
+```
+
+这样 `GridNavigator` 不需要猜测失败发生在哪个阶段。
+
+## 12. 命令行参数建议
+
+`src/tools/test_grid_navigation.py` 应暴露调参入口：
+
+```text
+--turn-rough-seconds
+--uturn-rough-seconds
+--line-acquire-timeout
+--leave-node-min-seconds
+--node-clear-samples
+--node-confirm-samples
+--node-center-seconds
+--obstacle-arm-delay
+--obstacle-clear-samples
+--obstacle-confirm-samples
+--line-lost-timeout
+```
+
+演示优先默认值：
+
+```text
+node_clear_samples = 3
+node_confirm_samples = 3
+node_center_seconds = 0.08
+obstacle_arm_delay = 0.3
+obstacle_clear_samples = 1
+obstacle_confirm_samples = 2
+```
+
+## 13. 视频演示建议
+
+为了稳定录制动态障碍演示：
+
+1. 先用 `--blocked-edge A2-A3 --no-ultrasonic` 录静态封边绕路，验证 A* 和转向路线。
+2. 再录动态障碍，固定路线 `A1 -> A3`。
+3. 障碍放在 `A2-A3` 边中后段，不要贴近 `A2` 节点。
+4. 在 `A2` 节点中心面对 `A3` 时，超声读数应大于阈值。
+5. 小车出点后，超声读数再进入阈值内。
+6. 阈值建议从 `12 ~ 15 cm` 调起。
+
+期望表现：
+
+```text
+A1 -> A2
+-> 出 A2 后在 A2-A3 边中确认障碍
+-> 封 A2-A3
+-> 掉头回 A2
+-> A* 重新选择 A2 -> B2 -> B3 -> A3
+```
+
+## 14. 单元测试重点
+
+`LineFollower`：
+
+- 节点读数能被识别。
+- 普通居中线不会被识别为节点。
+- 单步结果包含读数、动作、节点标记和是否看到线。
+
+`EdgeExecutor`：
+
+- 转向阶段不读取超声。
+- 出点阶段不读取超声，也不允许入点。
+- 连续 `node_clear_samples` 次非节点后才进入边中。
+- 找线阶段不封边。
+- 边中连续 `obstacle_confirm_samples` 次障碍才返回 `blocked_on_planned_edge`。
+- 一次节点读数不算入点，连续 `node_confirm_samples` 次才算。
+- 恢复成功后不二次掉头。
+
+`GridNavigator`：
+
+- 只在 `reached_next_node` 后更新 `current_node`。
+- `blocked_on_planned_edge` 后封锁 `planned_edge`，但不更新 `current_node`。
+- `recovered_to_start_node` 后 `current_node` 不变，`current_heading` 变为反方向。
+- A* 使用 `dynamic_blocked_edges` 重新规划。
+
+## 15. 实机验收顺序
+
+1. 只读巡线传感器，确认白底、普通直线、交叉点读数。
+2. 架空测试电机方向和左右动力。
+3. 只测转向粗转参数，不跑完整导航。
+4. 测 `A1 -> A2` 无超声出点和入点。
+5. 测静态封边 `A2-A3` 绕路。
+6. 测动态障碍，只允许边中封 `A2-A3`。
+7. 测恢复回 `A2` 后重新走 `A2 -> B2 -> B3 -> A3`。
+
+成功标准：
+
+- 坐标只在稳定入点后更新。
+- 障碍只在边中确认后封当前计划边。
+- 转向、出点、找线、恢复阶段不会误封边。
+- 任何失败都停车，不继续假装自己在某个节点。
