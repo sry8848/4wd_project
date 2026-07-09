@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 from pathlib import Path
 import sys
 from typing import List
@@ -119,6 +120,12 @@ def parse_args() -> argparse.Namespace:
         default=0.8,
         help="打开摄像头后的预热时间。",
     )
+    parser.add_argument(
+        "--device-timeout-seconds",
+        type=float,
+        default=12.0,
+        help="每个摄像头编号最多等待多久；小于等于 0 表示不启用超时保护。",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +160,66 @@ def build_camera_settings(args: argparse.Namespace) -> OpenCVCameraSettings:
     )
 
 
+def capture_device_with_timeout(
+    args: argparse.Namespace,
+    device_index: int,
+    output_path: Path,
+):
+    """带超时保护地测试一个摄像头编号。
+
+    参数:
+        args: 已解析的命令行参数。
+        device_index: OpenCV 摄像头编号。
+        output_path: 本次测试照片保存路径。
+
+    返回:
+        CaptureResult。
+    """
+
+    kwargs = {
+        "output_path": output_path,
+        "backend": args.backend,
+        "device_index": device_index,
+        "width": args.width,
+        "height": args.height,
+        "warmup_frames": args.warmup_frames,
+        "warmup_seconds": args.warmup_seconds,
+        "settings": build_camera_settings(args),
+        "burst_count": args.burst_count,
+    }
+    if args.device_timeout_seconds <= 0:
+        return capture_photo(**kwargs)
+
+    queue = multiprocessing.Queue()
+    process = multiprocessing.Process(target=_capture_worker, args=(queue, kwargs))
+    process.start()
+    process.join(args.device_timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join(1)
+        raise CameraCaptureError(
+            f"摄像头 {device_index} 超过 {args.device_timeout_seconds:.1f}s 没有返回，"
+            "可能是设备节点不可采集或被占用"
+        )
+
+    if queue.empty():
+        raise CameraCaptureError(f"摄像头 {device_index} 子进程没有返回结果")
+
+    status, payload = queue.get()
+    if status == "error":
+        raise CameraCaptureError(payload)
+    return payload
+
+
+def _capture_worker(queue: multiprocessing.Queue, kwargs: dict) -> None:
+    """在子进程里执行拍照，避免坏设备节点卡住主流程。"""
+
+    try:
+        queue.put(("ok", capture_photo(**kwargs)))
+    except Exception as exc:  # noqa: BLE001 - worker must serialize all failures.
+        queue.put(("error", str(exc)))
+
+
 def main() -> int:
     """执行普通拍照测试流程。
 
@@ -181,17 +248,7 @@ def main() -> int:
 
         print(f"正在尝试摄像头 {device_index}...", flush=True)
         try:
-            result = capture_photo(
-                output_path=output_path,
-                backend=args.backend,
-                device_index=device_index,
-                width=args.width,
-                height=args.height,
-                warmup_frames=args.warmup_frames,
-                warmup_seconds=args.warmup_seconds,
-                settings=build_camera_settings(args),
-                burst_count=args.burst_count,
-            )
+            result = capture_device_with_timeout(args, device_index, output_path)
         except CameraCaptureError as exc:
             message = f"摄像头 {device_index} 拍照失败: {exc}"
             errors.append(message)
