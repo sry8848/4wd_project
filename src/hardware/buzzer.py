@@ -124,5 +124,8 @@ class Buzzer:
     # ------------------------------------------------------------------
 
     def close(self):
-        """Release GPIO resources."""
-        self._gpio.cleanup()
+        """Turn off the buzzer and release only its GPIO pin."""
+        try:
+            self.off()
+        finally:
+            self._gpio.cleanup(self._pin)

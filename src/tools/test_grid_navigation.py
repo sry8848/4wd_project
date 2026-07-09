@@ -13,6 +13,7 @@ import argparse
 import sys
 
 from src.algorithms.astar import PASSABLE, format_path
+from src.hardware.buzzer import Buzzer
 from src.hardware.line_sensor import LineSensor
 from src.hardware.motor import MotorController
 from src.hardware.ultrasonic import UltrasonicSensor
@@ -25,6 +26,7 @@ from src.tasks.grid_navigation import (
     GridNavigator,
 )
 from src.tasks.line_follow import LineFollower
+from src.tasks.reverse_radar import CachedReverseRadar
 
 
 HEADINGS = (HEADING_NORTH, HEADING_EAST, HEADING_SOUTH, HEADING_WEST)
@@ -82,6 +84,8 @@ def parse_args():
     parser.add_argument("--obstacle-confirm-samples", type=int, default=2)
     parser.add_argument("--line-acquire-timeout", type=float, default=3.0)
     parser.add_argument("--line-lost-timeout", type=float, default=1.0)
+    parser.add_argument("--reverse-speed", type=int, default=15)
+    parser.add_argument("--reverse-turn-speed", type=int, default=20)
     parser.add_argument("--edge-timeout", type=float, default=5)
     parser.add_argument("--recovery-timeout", type=float, default=5)
     parser.add_argument("--delay", type=float, default=0.02)
@@ -92,9 +96,19 @@ def parse_args():
         help="disable ultrasonic obstacle checks for pure line-following tests",
     )
     parser.add_argument(
+        "--no-reverse-radar",
+        action="store_true",
+        help="disable buzzer warning during reverse recovery",
+    )
+    parser.add_argument(
         "--line-debug",
         action="store_true",
         help="print line sensor readings, node decision, action, and motor command every step",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="print plan/edge phase logs for field debugging",
     )
     return parser.parse_args()
 
@@ -164,6 +178,8 @@ def main():
     motor = None
     sensor = None
     ultrasonic = None
+    buzzer = None
+    reverse_radar = None
     try:
         motor = MotorController()
         sensor = LineSensor()
@@ -172,6 +188,10 @@ def main():
             ultrasonic = UltrasonicSensor(threshold_cm=args.threshold)
             ultrasonic.start_monitoring()
             obstacle_sensor = CachedObstacleSensor(ultrasonic)
+            if not args.no_reverse_radar:
+                buzzer = Buzzer()
+                reverse_radar = CachedReverseRadar(ultrasonic, buzzer)
+        debug_fn = print if args.debug else None
         line_follower = LineFollower(
             sensor,
             motor,
@@ -197,7 +217,11 @@ def main():
             obstacle_confirm_samples=args.obstacle_confirm_samples,
             line_acquire_timeout=args.line_acquire_timeout,
             line_lost_timeout=args.line_lost_timeout,
+            reverse_speed=args.reverse_speed,
+            reverse_turn_speed=args.reverse_turn_speed,
+            reverse_radar=reverse_radar,
             delay_seconds=args.delay,
+            debug_fn=debug_fn,
         )
         navigator = GridNavigator(
             grid,
@@ -206,11 +230,14 @@ def main():
             static_blocked_edges=static_blocked_edges,
             edge_max_seconds=args.edge_timeout,
             recovery_max_seconds=args.recovery_timeout,
+            debug_fn=debug_fn,
         )
 
         print(f"grid: {args.rows}x{args.cols}")
         print(f"start={args.start} end={args.end} heading={args.heading}")
         print(f"static blocked edges: {len(static_blocked_edges)}")
+        if args.debug:
+            print("debug: on")
         result = navigator.navigate(start, end, args.heading)
         print(f"navigation result: {result}")
         if navigator.current_node is not None:
@@ -223,6 +250,10 @@ def main():
             motor.brake()
         if sensor is not None:
             sensor.close()
+        if reverse_radar is not None:
+            reverse_radar.stop()
+        if buzzer is not None:
+            buzzer.close()
         if ultrasonic is not None:
             ultrasonic.close()
         if motor is not None:

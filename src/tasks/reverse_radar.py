@@ -22,6 +22,66 @@ import time
 import threading
 
 
+class CachedReverseRadar:
+    """Non-blocking beeper driven by a cached ultrasonic distance.
+
+    Parameters:
+    source: Object with a ``last_distance`` attribute updated elsewhere.
+    buzzer: Buzzer-like object with on()/off().
+    time_fn: Monotonic time function, injectable for tests.
+    """
+
+    def __init__(self, source, buzzer, time_fn=None):
+        self.source = source
+        self.buzzer = buzzer
+        self._time = time_fn if time_fn is not None else time.monotonic
+        self._next_beep_at = 0.0
+        self._tone_until = 0.0
+        self._active = False
+
+    def tick(self):
+        """Update the buzzer once without blocking or measuring distance."""
+        distance = getattr(self.source, "last_distance", -1)
+        if distance < 0 or distance > 100:
+            self.stop()
+            return
+
+        if distance <= 15:
+            self.buzzer.on()
+            self._active = True
+            self._tone_until = 0.0
+            return
+
+        now = self._time()
+        period, on_seconds = self._beep_pattern(distance)
+        if now >= self._next_beep_at:
+            self.buzzer.on()
+            self._active = True
+            self._tone_until = now + on_seconds
+            self._next_beep_at = now + period
+            return
+
+        if self._active and now >= self._tone_until:
+            self.buzzer.off()
+            self._active = False
+
+    def stop(self):
+        """Silence the buzzer and reset the next warning pulse."""
+        if self._active:
+            self.buzzer.off()
+        self._active = False
+        self._tone_until = 0.0
+        self._next_beep_at = 0.0
+
+    @staticmethod
+    def _beep_pattern(distance):
+        if distance > 50:
+            return 1.1, 0.1
+        if distance > 30:
+            return 0.6, 0.1
+        return 0.3, 0.08
+
+
 class ReverseRadar:
     """Beep at a rate inversely proportional to distance.
 

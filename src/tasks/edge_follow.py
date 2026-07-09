@@ -9,7 +9,18 @@ from dataclasses import dataclass
 import time
 from typing import Optional
 
-from src.tasks.line_follow import ACTION_SEARCH_LEFT
+from src.tasks.line_follow import (
+    ACTION_FORWARD,
+    ACTION_LEFT,
+    ACTION_NODE,
+    ACTION_RIGHT,
+    ACTION_SEARCH_LEFT,
+    LineStepResult,
+    decide_line_action,
+    is_at_node,
+    is_centered_line,
+    is_line_seen,
+)
 
 
 EDGE_REACHED_NEXT_NODE = "reached_next_node"
@@ -148,7 +159,11 @@ class EdgeFollower:
     obstacle_confirm_samples: Obstacle readings required before blocking an edge.
     line_acquire_timeout: Maximum protected leave/search time.
     line_lost_timeout: Maximum all-white line loss time during travel.
+    reverse_speed: PWM speed used when backing straight along the current edge.
+    reverse_turn_speed: PWM speed used for reverse line corrections.
+    reverse_radar: Optional non-blocking reverse-radar beeper with tick()/stop().
     delay_seconds: Loop delay between sensor samples.
+    debug_fn: Optional callback(message) for field-test phase logs.
     time_fn/sleep_fn: Injectable time functions for deterministic tests.
     """
 
@@ -169,7 +184,11 @@ class EdgeFollower:
         obstacle_confirm_samples=2,
         line_acquire_timeout=3.0,
         line_lost_timeout=1.0,
+        reverse_speed=15,
+        reverse_turn_speed=20,
+        reverse_radar=None,
         delay_seconds=0.02,
+        debug_fn=None,
         time_fn=None,
         sleep_fn=None,
     ):
@@ -189,6 +208,10 @@ class EdgeFollower:
             raise ValueError("line_acquire_timeout must be > 0")
         if line_lost_timeout <= 0:
             raise ValueError("line_lost_timeout must be > 0")
+        if reverse_speed < 0 or reverse_speed > 100:
+            raise ValueError("reverse_speed must be between 0 and 100")
+        if reverse_turn_speed < 0 or reverse_turn_speed > 100:
+            raise ValueError("reverse_turn_speed must be between 0 and 100")
         if delay_seconds < 0:
             raise ValueError("delay_seconds must be >= 0")
 
@@ -204,7 +227,11 @@ class EdgeFollower:
         self.node_center_seconds = node_center_seconds
         self.line_acquire_timeout = line_acquire_timeout
         self.line_lost_timeout = line_lost_timeout
+        self.reverse_speed = reverse_speed
+        self.reverse_turn_speed = reverse_turn_speed
+        self.reverse_radar = reverse_radar
         self.delay_seconds = delay_seconds
+        self._debug = debug_fn
         self._time = time_fn if time_fn is not None else time.monotonic
         self._sleep = sleep_fn if sleep_fn is not None else time.sleep
         self.obstacle_gate = ObstacleGate(
@@ -214,6 +241,11 @@ class EdgeFollower:
             confirm_samples=obstacle_confirm_samples,
             time_fn=self._time,
         )
+
+    def _log(self, message):
+        """Emit one debug line when a debug callback is configured."""
+        if self._debug is not None:
+            self._debug(message)
 
     def execute_planned_edge(self, current_heading, target_heading, max_seconds):
         """Align to target_heading, leave the node, then travel the edge.
@@ -227,15 +259,28 @@ class EdgeFollower:
             raise ValueError("max_seconds must be > 0")
 
         deadline = self._time() + max_seconds
+        self._log(
+            f"edge_exec start current={current_heading} target={target_heading} "
+            f"max_seconds={max_seconds}"
+        )
         if not self._align_to_heading(current_heading, target_heading, deadline):
             self.motor.brake()
-            return EdgeExecutionResult(EDGE_TURN_FAILED, reason=EDGE_TIMEOUT)
+            result = EdgeExecutionResult(EDGE_TURN_FAILED, reason=EDGE_TIMEOUT)
+            self._log(f"edge_exec result status={result.status} reason={result.reason}")
+            return result
 
         if not self._leave_node(deadline):
             self.motor.brake()
-            return EdgeExecutionResult(EDGE_LEAVE_NODE_FAILED, reason=EDGE_TIMEOUT)
+            result = EdgeExecutionResult(EDGE_LEAVE_NODE_FAILED, reason=EDGE_TIMEOUT)
+            self._log(f"edge_exec result status={result.status} reason={result.reason}")
+            return result
 
-        return self._travel_edge(deadline, final_heading=target_heading)
+        result = self._travel_edge(deadline, final_heading=target_heading)
+        self._log(
+            f"edge_exec result status={result.status} "
+            f"reason={result.reason} final_heading={result.final_heading}"
+        )
+        return result
 
     def follow_edge(self, max_seconds):
         """Legacy wrapper that executes the current heading without alignment.
@@ -247,10 +292,10 @@ class EdgeFollower:
         return self.execute_planned_edge(None, None, max_seconds).status
 
     def recover_to_start_node(self, return_heading=None, max_seconds=None):
-        """Turn around once and follow the line back to the start node.
+        """Reverse along the current edge back to the start node.
 
         Parameters:
-        return_heading: Heading after recovery, normally opposite(target_heading).
+        return_heading: Heading after recovery, normally the planned edge heading.
             For backward compatibility, a numeric first argument is treated as
             max_seconds.
         max_seconds: Recovery timeout.
@@ -262,28 +307,37 @@ class EdgeFollower:
             raise ValueError("max_seconds must be > 0")
 
         deadline = self._time() + max_seconds
-        if not self._rough_turn(left=True, seconds=self.uturn_rough_seconds, deadline=deadline):
+        self._log(
+            f"recovery start return_heading={return_heading} max_seconds={max_seconds}"
+        )
+        try:
+            result = self._reverse_to_node_without_obstacle(
+                deadline,
+                final_heading=return_heading,
+            )
+            if result.status == EDGE_RECOVERED_TO_START_NODE:
+                self._log(
+                    f"recovery result status={result.status} "
+                    f"final_heading={result.final_heading}"
+                )
+                return result
+
             self.motor.brake()
-            return EdgeExecutionResult(
+            failed = EdgeExecutionResult(
                 EDGE_RECOVERY_FAILED,
                 final_heading=return_heading,
-                reason=EDGE_TIMEOUT,
+                reason=result.status,
             )
-
-        result = self._travel_to_node_without_obstacle(deadline, final_heading=return_heading)
-        if result.status == EDGE_RECOVERED_TO_START_NODE:
-            return result
-
-        self.motor.brake()
-        return EdgeExecutionResult(
-            EDGE_RECOVERY_FAILED,
-            final_heading=return_heading,
-            reason=result.status,
-        )
+            self._log(f"recovery result status={failed.status} reason={failed.reason}")
+            return failed
+        finally:
+            if self.reverse_radar is not None:
+                self.reverse_radar.stop()
 
     def _align_to_heading(self, current_heading, target_heading, deadline):
         # Step 1: Coarse turn only. No ultrasonic, no node recognition here.
         if current_heading is None or target_heading is None:
+            self._log("align skip (heading unknown)")
             return self._time() < deadline
         if current_heading not in _HEADINGS or target_heading not in _HEADINGS:
             raise ValueError("heading must be north/east/south/west")
@@ -293,11 +347,24 @@ class EdgeFollower:
         diff = (target_index - current_index) % len(_HEADINGS)
 
         if diff == 0:
+            self._log(f"align skip already_facing={target_heading}")
             return self._time() < deadline
         if diff == 1:
+            self._log(
+                f"align turn=right seconds={self.turn_rough_seconds} "
+                f"from={current_heading} to={target_heading}"
+            )
             return self._rough_turn(left=False, seconds=self.turn_rough_seconds, deadline=deadline)
         if diff == 2:
+            self._log(
+                f"align turn=uturn_left seconds={self.uturn_rough_seconds} "
+                f"from={current_heading} to={target_heading}"
+            )
             return self._rough_turn(left=True, seconds=self.uturn_rough_seconds, deadline=deadline)
+        self._log(
+            f"align turn=left seconds={self.turn_rough_seconds} "
+            f"from={current_heading} to={target_heading}"
+        )
         return self._rough_turn(left=True, seconds=self.turn_rough_seconds, deadline=deadline)
 
     def _rough_turn(self, left, seconds, deadline):
@@ -314,11 +381,19 @@ class EdgeFollower:
 
     def _leave_node(self, deadline):
         # Step 2: Protected leave. Node readings cannot mean "next node" here.
+        self._log("leave_node start")
         started_at = self._time()
         clear_count = 0
+        last_summary = None
         while self._time() < deadline and self._time() - started_at <= self.line_acquire_timeout:
             reading = self.line_follower.sensor.read()
             result = self.line_follower.apply_reading(reading)
+            summary = _reading_summary(result)
+            if summary != last_summary:
+                self._log(
+                    f"leave_node {summary} clear={clear_count}/{self.node_clear_samples}"
+                )
+                last_summary = summary
 
             if result.is_node:
                 clear_count = 0
@@ -335,23 +410,43 @@ class EdgeFollower:
                 self._time() - started_at >= self.leave_node_min_seconds
                 and clear_count >= self.node_clear_samples
             ):
+                self._log(f"leave_node success clear={clear_count}")
                 return True
 
             self._sleep(self.delay_seconds)
 
+        self._log(
+            f"leave_node failed last={last_summary} clear={clear_count}/"
+            f"{self.node_clear_samples}"
+        )
         return False
 
     def _travel_edge(self, deadline, final_heading=None):
         # Step 3: Normal edge travel. This is the only dynamic-blocking phase.
+        self._log("edge_travel start")
         self.obstacle_gate.start_edge()
         node_count = 0
         lost_since = None
+        last_summary = None
+        peak_node_count = 0
 
         while self._time() < deadline:
             result = self.line_follower.step()
 
             if result.is_node:
                 node_count += 1
+                peak_node_count = max(peak_node_count, node_count)
+                summary = _reading_summary(result)
+                if (
+                    summary != last_summary
+                    or node_count == 1
+                    or node_count >= self.node_confirm_samples
+                ):
+                    self._log(
+                        f"edge_travel {summary} node_count={node_count}/"
+                        f"{self.node_confirm_samples}"
+                    )
+                    last_summary = summary
                 if node_count >= self.node_confirm_samples:
                     self._center_on_node()
                     return EdgeExecutionResult(
@@ -360,9 +455,17 @@ class EdgeFollower:
                     )
             else:
                 node_count = 0
+                summary = _reading_summary(result)
+                if summary != last_summary:
+                    self._log(
+                        f"edge_travel {summary} node_count={node_count}/"
+                        f"{self.node_confirm_samples}"
+                    )
+                    last_summary = summary
 
             if self._stable_tracking(result) and self.obstacle_gate.check_blocked():
                 self.motor.brake()
+                self._log("edge_travel blocked_by_obstacle")
                 return EdgeExecutionResult(
                     EDGE_BLOCKED_ON_PLANNED_EDGE,
                     final_heading=final_heading,
@@ -371,6 +474,10 @@ class EdgeFollower:
             lost_since = self._update_line_loss(result, lost_since)
             if lost_since is not None and self._time() - lost_since >= self.line_lost_timeout:
                 self.motor.brake()
+                self._log(
+                    f"edge_travel line_lost last={last_summary} "
+                    f"peak_node_count={peak_node_count}"
+                )
                 return EdgeExecutionResult(
                     EDGE_LINE_LOST,
                     final_heading=final_heading,
@@ -379,18 +486,40 @@ class EdgeFollower:
             self._sleep(self.delay_seconds)
 
         self.motor.brake()
+        self._log(
+            f"edge_travel timeout last={last_summary} peak_node_count={peak_node_count}"
+        )
         return EdgeExecutionResult(EDGE_TIMEOUT, final_heading=final_heading)
 
-    def _travel_to_node_without_obstacle(self, deadline, final_heading=None):
-        # Step 4: Recovery travel. Ultrasonic is ignored and no edge can be sealed.
+    def _reverse_to_node_without_obstacle(self, deadline, final_heading=None):
+        # Step 4: Recovery travel by reversing. No obstacle can seal a new edge.
+        self._log("reverse_recovery start")
         node_count = 0
         lost_since = None
+        last_summary = None
+        peak_node_count = 0
 
         while self._time() < deadline:
-            result = self.line_follower.step()
+            if self.reverse_radar is not None:
+                self.reverse_radar.tick()
+
+            reading = self.line_follower.sensor.read()
+            result = self._apply_reverse_reading(reading)
 
             if result.is_node:
                 node_count += 1
+                peak_node_count = max(peak_node_count, node_count)
+                summary = _reading_summary(result)
+                if (
+                    summary != last_summary
+                    or node_count == 1
+                    or node_count >= self.node_confirm_samples
+                ):
+                    self._log(
+                        f"reverse_recovery {summary} node_count={node_count}/"
+                        f"{self.node_confirm_samples}"
+                    )
+                    last_summary = summary
                 if node_count >= self.node_confirm_samples:
                     self._center_on_node()
                     return EdgeExecutionResult(
@@ -399,10 +528,21 @@ class EdgeFollower:
                     )
             else:
                 node_count = 0
+                summary = _reading_summary(result)
+                if summary != last_summary:
+                    self._log(
+                        f"reverse_recovery {summary} node_count={node_count}/"
+                        f"{self.node_confirm_samples}"
+                    )
+                    last_summary = summary
 
             lost_since = self._update_line_loss(result, lost_since)
             if lost_since is not None and self._time() - lost_since >= self.line_lost_timeout:
                 self.motor.brake()
+                self._log(
+                    f"reverse_recovery line_lost last={last_summary} "
+                    f"peak_node_count={peak_node_count}"
+                )
                 return EdgeExecutionResult(
                     EDGE_LINE_LOST,
                     final_heading=final_heading,
@@ -411,7 +551,38 @@ class EdgeFollower:
             self._sleep(self.delay_seconds)
 
         self.motor.brake()
+        self._log(
+            f"reverse_recovery timeout last={last_summary} "
+            f"peak_node_count={peak_node_count}"
+        )
         return EdgeExecutionResult(EDGE_TIMEOUT, final_heading=final_heading)
+
+    def _apply_reverse_reading(self, reading):
+        """Drive one reverse line-follow step from an already-read sample.
+
+        Parameters:
+        reading: LineReading-like object from the front line sensor.
+        """
+        action = decide_line_action(reading)
+
+        if action == ACTION_NODE:
+            self.motor.brake()
+        elif action == ACTION_FORWARD:
+            self.motor.backward(self.reverse_speed, self.reverse_speed)
+        elif action == ACTION_LEFT:
+            self.motor.backward(self.reverse_turn_speed, 0)
+        elif action == ACTION_RIGHT:
+            self.motor.backward(0, self.reverse_turn_speed)
+        else:
+            self.motor.brake()
+
+        return LineStepResult(
+            reading=reading,
+            action=action,
+            is_node=is_at_node(reading),
+            line_seen=is_line_seen(reading),
+            centered_line=is_centered_line(reading),
+        )
 
     def _center_on_node(self):
         if self.node_center_seconds > 0:
@@ -435,3 +606,21 @@ class EdgeFollower:
         if lost_since is None:
             return self._time()
         return lost_since
+
+
+def _reading_summary(result):
+    """Format one line-step result for compact field-test logs.
+
+    Parameters:
+    result: LineStepResult-like object with reading/action/is_node/line_seen.
+    """
+    reading = result.reading
+    return (
+        f"LO={int(bool(reading.left_outer))} "
+        f"LI={int(bool(reading.left_inner))} "
+        f"RI={int(bool(reading.right_inner))} "
+        f"RO={int(bool(reading.right_outer))} "
+        f"node={int(bool(result.is_node))} "
+        f"line={int(bool(result.line_seen))} "
+        f"action={result.action}"
+    )

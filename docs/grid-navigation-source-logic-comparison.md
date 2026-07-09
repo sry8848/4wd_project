@@ -251,7 +251,7 @@ edge_follower = EdgeFollower(..., obstacle_sensor=obstacle_sensor, ...)
 | --- | --- |
 | `reached_node` | 更新 `current_node = next_node` |
 | `blocked_before_entering` | 把当前边加入 `dynamic_blocked_edges`，重新 A* |
-| `blocked_mid_edge` | 掉头回上一节点，成功后封锁当前边并重新 A* |
+| `blocked_mid_edge` | 倒车回上一节点，成功后封锁当前边并重新 A* |
 | `timeout` 或未知失败 | 停车，返回 `failed` |
 | A* 找不到路径 | 停车，返回 `no_path` |
 
@@ -259,7 +259,7 @@ edge_follower = EdgeFollower(..., obstacle_sensor=obstacle_sensor, ...)
 
 - 只有到达可信节点后才更新 `current_node`。
 - 中途遇障碍不把车的位置更新到下一节点。
-- 当前版本回上一节点用“原地掉头 + 正向巡线”，不是倒车。
+- 当前版本回上一节点用“倒车沿原边退回”，恢复成功后车头仍朝向原计划边方向。
 
 ## 5. 厂商寻迹示例的对应逻辑
 
@@ -444,7 +444,7 @@ if not run_track():
 | 离开起点节点 | 根据传感器状态离开 | 无 | 固定前进 0.2 秒 |
 | 超声避障 | 后台线程更新缓存，边执行读取缓存 | 独立避障动作 | 后台线程更新布尔值 |
 | 障碍更新地图 | 封锁当前边 | 无地图 | 多数场景标记下一个节点 |
-| 中途障碍恢复 | 掉头 + 正向巡线回上一节点 | 无 | 掉头 + `run_track_back()` |
+| 中途障碍恢复 | 倒车沿原边回上一节点 | 无 | 掉头 + `run_track_back()` |
 
 ## 9. 对当前实车问题的源码级判断
 

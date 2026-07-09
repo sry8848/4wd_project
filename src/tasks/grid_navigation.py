@@ -2,7 +2,7 @@
 
 import time
 
-from src.algorithms.astar import astar
+from src.algorithms.astar import astar, format_path
 from src.tasks.edge_follow import (
     EDGE_BLOCKED_ON_PLANNED_EDGE,
     EDGE_REACHED_NEXT_NODE,
@@ -35,6 +35,7 @@ class GridNavigator:
         turning is now handled by EdgeFollower.
     edge_max_seconds: Timeout for one planned edge execution.
     recovery_max_seconds: Timeout for returning to the start node after a block.
+    debug_fn: Optional callback(message) for field-test plan/result logs.
     """
 
     def __init__(
@@ -49,6 +50,7 @@ class GridNavigator:
         edge_max_seconds=5,
         recovery_max_seconds=5,
         sleep_fn=None,
+        debug_fn=None,
     ):
         self.grid = grid
         self.edge_follower = edge_follower
@@ -61,9 +63,15 @@ class GridNavigator:
         self.edge_max_seconds = edge_max_seconds
         self.recovery_max_seconds = recovery_max_seconds
         self._sleep = sleep_fn if sleep_fn is not None else time.sleep
+        self._debug = debug_fn
         self.current_node = None
         self.target_node = None
         self.current_heading = None
+
+    def _log(self, message):
+        """Emit one debug line when a debug callback is configured."""
+        if self._debug is not None:
+            self._debug(message)
 
     def navigate(self, start, end, initial_heading):
         """Navigate from start to end using trusted-node state transitions.
@@ -80,6 +88,10 @@ class GridNavigator:
         self.target_node = end
         self.current_heading = initial_heading
         self.dynamic_blocked_edges = set()
+        self._log(
+            f"nav start={_fmt_node(start)} end={_fmt_node(end)} "
+            f"heading={initial_heading}"
+        )
 
         while self.current_node != self.target_node:
             path = astar(
@@ -90,11 +102,21 @@ class GridNavigator:
             )
             if path is None:
                 self.motor.brake()
+                self._log(
+                    f"nav no_path at={_fmt_node(self.current_node)} "
+                    f"heading={self.current_heading} "
+                    f"dynamic_blocked={len(self.dynamic_blocked_edges)}"
+                )
                 return NAV_NO_PATH
 
             next_node = path[1]
             target_heading = _heading_between(self.current_node, next_node)
             planned_edge = frozenset({self.current_node, next_node})
+            self._log(
+                f"nav plan path={'->'.join(format_path(path))} "
+                f"edge={_fmt_node(self.current_node)}-{_fmt_node(next_node)} "
+                f"heading={self.current_heading}->{target_heading}"
+            )
 
             edge_result = self.edge_follower.execute_planned_edge(
                 self.current_heading,
@@ -102,20 +124,38 @@ class GridNavigator:
                 self.edge_max_seconds,
             )
             edge_status = _result_status(edge_result)
+            self._log(
+                f"nav edge_result status={edge_status} "
+                f"reason={getattr(edge_result, 'reason', None)} "
+                f"at={_fmt_node(self.current_node)}"
+            )
 
             if edge_status == EDGE_REACHED_NEXT_NODE:
                 self.current_node = next_node
                 self.current_heading = target_heading
+                self._log(
+                    f"nav reached node={_fmt_node(self.current_node)} "
+                    f"heading={self.current_heading}"
+                )
                 continue
 
             if edge_status == EDGE_BLOCKED_ON_PLANNED_EDGE:
                 self.dynamic_blocked_edges.add(planned_edge)
-                return_heading = _opposite_heading(target_heading)
+                return_heading = target_heading
+                self._log(
+                    f"nav block edge={_fmt_node(self.current_node)}-"
+                    f"{_fmt_node(next_node)} recover_heading={return_heading}"
+                )
                 recovery_result = self.edge_follower.recover_to_start_node(
                     return_heading=return_heading,
                     max_seconds=self.recovery_max_seconds,
                 )
-                if _result_status(recovery_result) != EDGE_RECOVERED_TO_START_NODE:
+                recovery_status = _result_status(recovery_result)
+                self._log(
+                    f"nav recovery_result status={recovery_status} "
+                    f"reason={getattr(recovery_result, 'reason', None)}"
+                )
+                if recovery_status != EDGE_RECOVERED_TO_START_NODE:
                     self.motor.brake()
                     return NAV_FAILED
 
@@ -123,16 +163,30 @@ class GridNavigator:
                     recovery_result,
                     default=return_heading,
                 )
+                self._log(
+                    f"nav recovered at={_fmt_node(self.current_node)} "
+                    f"heading={self.current_heading}"
+                )
                 continue
 
             self.motor.brake()
+            self._log(
+                f"nav failed status={edge_status} "
+                f"at={_fmt_node(self.current_node)} heading={self.current_heading}"
+            )
             return NAV_FAILED
 
         self.motor.brake()
+        self._log(f"nav arrived at={_fmt_node(self.current_node)}")
         return NAV_ARRIVED
 
     def _all_blocked_edges(self):
         return self.static_blocked_edges | self.dynamic_blocked_edges
+
+
+def _fmt_node(node):
+    """Format one (row, col) node as A1-style text for debug logs."""
+    return format_path([node])[0]
 
 
 def _result_status(result):

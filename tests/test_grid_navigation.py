@@ -130,13 +130,13 @@ class GridNavigatorTest(unittest.TestCase):
         self.assertIn(frozenset({(0, 0), (0, 1)}), navigator.dynamic_blocked_edges)
         self.assertEqual(
             self.edge_follower.recover_calls,
-            [(HEADING_WEST, 6)],
+            [(HEADING_EAST, 6)],
         )
         self.assertEqual(
             self.edge_follower.execute_calls,
             [
                 (HEADING_EAST, HEADING_EAST, 5),
-                (HEADING_WEST, HEADING_SOUTH, 5),
+                (HEADING_EAST, HEADING_SOUTH, 5),
                 (HEADING_SOUTH, HEADING_EAST, 5),
                 (HEADING_EAST, HEADING_NORTH, 5),
             ],

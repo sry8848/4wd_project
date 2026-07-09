@@ -191,7 +191,7 @@ EDGE_RESULT: blocked_on_planned_edge
 
 RECOVERY_RESULT: recovered_to_start_node
   -> current_node 不变
-  -> current_heading = opposite(target_heading)
+  -> current_heading = target_heading
   -> 回到 AT_NODE，重新 A*
 
 任意失败
@@ -199,7 +199,7 @@ RECOVERY_RESULT: recovered_to_start_node
   -> 返回 failed
 ```
 
-注意：遇到中途障碍时，`current_node` 不更新为 `next_node`。恢复成功后，车头朝向是返回方向，不再盲目二次掉头。
+注意：遇到中途障碍时，`current_node` 不更新为 `next_node`。恢复成功后，车头仍朝向原计划边方向，因为恢复动作使用倒车而不是原地掉头。
 
 ### 4.2 边级状态机
 
@@ -227,8 +227,8 @@ EDGE_BLOCKED
   返回 blocked_on_planned_edge
 
 RECOVER_TO_NODE
-  掉头回原节点
-  不读超声
+  倒车沿原边回原节点
+  不根据超声封边
   不封新边
   稳定入点后返回 recovered_to_start_node
 
@@ -247,8 +247,8 @@ flowchart TD
     E -- "稳定入点" --> F["REACHED_NEXT_NODE: 更新 current_node"]
     F --> A
     E -- "障碍门控确认" --> G["EDGE_BLOCKED: 封 planned_edge"]
-    G --> H["RECOVER_TO_NODE: 掉头回原节点"]
-    H -- "恢复成功" --> I["BACK_AT_NODE: current_node 不变, heading 反向"]
+    G --> H["RECOVER_TO_NODE: 倒车回原节点"]
+    H -- "恢复成功" --> I["BACK_AT_NODE: current_node 不变, heading 保持计划方向"]
     I --> A
     C -- "转向失败" --> Z["FAILED: 停车"]
     D -- "出点失败" --> Z
@@ -409,9 +409,9 @@ EDGE_TRAVEL
 恢复阶段：
 
 1. 停车。
-2. 按反方向粗转。
-3. 受保护进入原线。
-4. 沿原线回起点节点。
+2. 沿当前计划边直接倒车。
+3. 按倒车巡线规则修正左右轮。
+4. 沿原线退回起点节点。
 5. 稳定入点确认。
 6. 停车。
 7. 返回 `recovered_to_start_node`。
@@ -421,16 +421,18 @@ EDGE_TRAVEL
 - 根据超声封边。
 - 把中途擦到的线当成新节点。
 - 调用 A*。
-- 成功后盲目二次掉头。
+- 成功后再掉头。
+
+倒车阶段可以用缓存式倒车雷达蜂鸣提示，但只读后台 `last_distance` 缓存，不同步测距，也不把距离远近作为恢复成功或失败的依据。
 
 恢复成功后：
 
 ```text
 current_node 不变
-current_heading = opposite(target_heading)
+current_heading = target_heading
 ```
 
-例如当前计划是 `A2 -> A3`，目标朝向是 east。中途障碍后掉头回到 `A2`，车头朝 west。导航层下一轮从 `A2`、heading=west 重新 A*。
+例如当前计划是 `A2 -> A3`，目标朝向是 east。中途障碍后倒车回到 `A2`，车头仍朝 east。导航层下一轮从 `A2`、heading=east 重新 A*。
 
 ## 11. 建议返回值
 
@@ -474,6 +476,9 @@ recovery_failed
 --obstacle-clear-samples
 --obstacle-confirm-samples
 --line-lost-timeout
+--reverse-speed
+--reverse-turn-speed
+--no-reverse-radar
 ```
 
 演示优先默认值：
@@ -485,6 +490,8 @@ node_center_seconds = 0.08
 obstacle_arm_delay = 0.3
 obstacle_clear_samples = 1
 obstacle_confirm_samples = 2
+reverse_speed = 15
+reverse_turn_speed = 20
 ```
 
 ## 13. 视频演示建议
@@ -504,7 +511,7 @@ obstacle_confirm_samples = 2
 A1 -> A2
 -> 出 A2 后在 A2-A3 边中确认障碍
 -> 封 A2-A3
--> 掉头回 A2
+-> 倒车回 A2
 -> A* 重新选择 A2 -> B2 -> B3 -> A3
 ```
 
@@ -524,13 +531,13 @@ A1 -> A2
 - 找线阶段不封边。
 - 边中连续 `obstacle_confirm_samples` 次障碍才返回 `blocked_on_planned_edge`。
 - 一次节点读数不算入点，连续 `node_confirm_samples` 次才算。
-- 恢复成功后不二次掉头。
+- 恢复阶段直接倒车，不执行原地掉头。
 
 `GridNavigator`：
 
 - 只在 `reached_next_node` 后更新 `current_node`。
 - `blocked_on_planned_edge` 后封锁 `planned_edge`，但不更新 `current_node`。
-- `recovered_to_start_node` 后 `current_node` 不变，`current_heading` 变为反方向。
+- `recovered_to_start_node` 后 `current_node` 不变，`current_heading` 保持目标边方向。
 - A* 使用 `dynamic_blocked_edges` 重新规划。
 
 ## 15. 实机验收顺序

@@ -7,6 +7,7 @@ from src.tasks.edge_follow import (
     EDGE_LINE_LOST,
     EDGE_REACHED_NEXT_NODE,
     EDGE_RECOVERED_TO_START_NODE,
+    EDGE_RECOVERY_FAILED,
     EdgeFollower,
 )
 from src.tasks.grid_navigation import HEADING_EAST, HEADING_NORTH, HEADING_WEST
@@ -15,6 +16,8 @@ from src.tasks.line_follow import LineFollower
 
 NODE_READING = LineReading(True, True, True, True)
 LINE_READING = LineReading(False, True, True, False)
+LEFT_READING = LineReading(False, True, False, False)
+RIGHT_READING = LineReading(False, False, True, False)
 WHITE_READING = LineReading(False, False, False, False)
 
 
@@ -57,6 +60,9 @@ class FakeMotor:
     def right(self, left_speed, right_speed):
         self.calls.append(("right", left_speed, right_speed))
 
+    def backward(self, left_speed, right_speed):
+        self.calls.append(("backward", left_speed, right_speed))
+
     def spin_left(self, left_speed, right_speed):
         self.calls.append(("spin_left", left_speed, right_speed))
 
@@ -80,6 +86,18 @@ class FakeObstacleSensor:
         if self.obstructed_values:
             return self.obstructed_values.pop(0)
         return False
+
+
+class FakeReverseRadar:
+    def __init__(self):
+        self.tick_calls = 0
+        self.stop_calls = 0
+
+    def tick(self):
+        self.tick_calls += 1
+
+    def stop(self):
+        self.stop_calls += 1
 
 
 class EdgeFollowerTest(unittest.TestCase):
@@ -217,25 +235,108 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertEqual(self.obstacle_sensor.calls, 0)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
-    def test_recover_to_start_node_turns_once_and_does_not_read_ultrasonic(self):
+    def test_recover_to_start_node_reverses_without_turning_or_ultrasonic(self):
         follower = self.build_follower(
             [LINE_READING, NODE_READING, NODE_READING],
             obstructed_values=[True, True, True],
+            reverse_speed=12,
+            reverse_turn_speed=34,
         )
 
         result = follower.recover_to_start_node(
-            return_heading=HEADING_WEST,
+            return_heading=HEADING_EAST,
             max_seconds=3,
         )
 
-        spin_left_calls = [
-            call for call in self.motor.calls if call[0] == "spin_left"
+        spin_calls = [
+            call for call in self.motor.calls if call[0].startswith("spin_")
         ]
         self.assertEqual(result.status, EDGE_RECOVERED_TO_START_NODE)
-        self.assertEqual(result.final_heading, HEADING_WEST)
-        self.assertEqual(len(spin_left_calls), 1)
+        self.assertEqual(result.final_heading, HEADING_EAST)
+        self.assertEqual(spin_calls, [])
+        self.assertIn(("backward", 12, 12), self.motor.calls)
         self.assertEqual(self.obstacle_sensor.calls, 0)
         self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_reverse_recovery_maps_line_actions_to_backward_motor_commands(self):
+        follower = self.build_follower(
+            [
+                LEFT_READING,
+                RIGHT_READING,
+                LINE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+            reverse_speed=11,
+            reverse_turn_speed=22,
+        )
+
+        result = follower.recover_to_start_node(
+            return_heading=HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_RECOVERED_TO_START_NODE)
+        self.assertIn(("backward", 22, 0), self.motor.calls)
+        self.assertIn(("backward", 0, 22), self.motor.calls)
+        self.assertIn(("backward", 11, 11), self.motor.calls)
+
+    def test_reverse_recovery_reports_failure_when_line_stays_lost(self):
+        follower = self.build_follower(
+            [WHITE_READING, WHITE_READING, WHITE_READING, WHITE_READING],
+            default_reading=WHITE_READING,
+            line_lost_timeout=0.2,
+        )
+
+        result = follower.recover_to_start_node(
+            return_heading=HEADING_EAST,
+            max_seconds=1,
+        )
+
+        self.assertEqual(result.status, EDGE_RECOVERY_FAILED)
+        self.assertEqual(result.reason, EDGE_LINE_LOST)
+        self.assertNotIn(("backward", 15, 15), self.motor.calls)
+
+    def test_reverse_recovery_ticks_and_stops_reverse_radar(self):
+        radar = FakeReverseRadar()
+        follower = self.build_follower(
+            [LINE_READING, NODE_READING, NODE_READING],
+            reverse_radar=radar,
+        )
+
+        result = follower.recover_to_start_node(
+            return_heading=HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_RECOVERED_TO_START_NODE)
+        self.assertGreaterEqual(radar.tick_calls, 1)
+        self.assertEqual(radar.stop_calls, 1)
+
+    def test_debug_fn_logs_align_leave_and_result_phases(self):
+        logs = []
+        follower = self.build_follower(
+            [
+                LINE_READING,
+                LINE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+            debug_fn=logs.append,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_NORTH,
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+        joined = "\n".join(logs)
+        self.assertIn("align turn=right", joined)
+        self.assertIn("leave_node start", joined)
+        self.assertIn("edge_travel start", joined)
+        self.assertIn("edge_exec result status=reached_next_node", joined)
 
 
 if __name__ == "__main__":

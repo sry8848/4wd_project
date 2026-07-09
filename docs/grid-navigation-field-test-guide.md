@@ -264,19 +264,22 @@ python3 -m src.tools.test_grid_navigation \
   --line-right-turn-speed 100 \
   --search-speed 5 \
   --spin-speed 20 \
+  --reverse-speed 15 \
+  --reverse-turn-speed 20 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
   --threshold 20 \
-  --line-debug
+  --line-debug \
+  --debug
 ```
 
 预期：
 
 1. 小车刹车。
-2. 原地掉头。
-3. 正向巡线回 A1。
-4. 再次掉头，封锁 A1-A2。
-5. 重新规划绕路。
+2. 直接倒车沿 A1-A2 原边退回 A1。
+3. 倒车期间蜂鸣器按超声缓存距离提示，但距离不决定恢复成败。
+4. 稳定识别 A1 后停车，封锁 A1-A2。
+5. 小车车头仍朝 east，重新规划绕路。
 
 如果恢复失败，正确结果是停车并报告 `navigation result: failed`。恢复失败时不能继续假装自己在 A1 或 A2。
 
