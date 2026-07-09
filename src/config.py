@@ -50,3 +50,14 @@ BUZZER_PIN = 8
 # 舵机 PWM 频率固定为 50 Hz（周期 20ms），这是标准舵机的工作频率。
 SERVO_PIN = 23
 SERVO_PWM_FREQUENCY = 50
+
+# 四路巡线传感器引脚来自“环境说明/硬件接口速查手册.xlsx”的 BCM 列。
+# 传感器从小车左侧到右侧依次为：左1、左2、右1、右2。
+LINE_SENSOR_LEFT_OUTER_PIN = 3
+LINE_SENSOR_LEFT_INNER_PIN = 5
+LINE_SENSOR_RIGHT_INNER_PIN = 4
+LINE_SENSOR_RIGHT_OUTER_PIN = 18
+
+# 参考源码和 Yahboom 常见模块逻辑：检测到黑线时 GPIO 为 LOW。
+# 如果只读测试证明当前传感器电平相反，只改这个配置，不要在业务代码里写双套判断。
+LINE_SENSOR_BLACK_VALUE = False

@@ -2,8 +2,6 @@
 
 本项目是计算机工程实践项目，硬件为 Yahboom 4WD 树莓派智能小车。# Project Overview
 
-
-
 开发方式：
 
 - Windows 本地 VS Code 写代码。
@@ -14,8 +12,6 @@
 
 树莓派项目目录：`/home/pi/4wd_project`
 
-
-
 已使用过的 SSH 信息：
 
 - IP：`192.168.50.1`
@@ -23,6 +19,10 @@
 - 用户：`root`
 
 - 常用密码：`yahboom`
+
+
+
+注意：树莓派上 `python` 指向 Python 2.7。
 
 # Working Principles
 
@@ -172,7 +172,5 @@ rg --files docs 环境说明 参考项目 src
 - 厂商代码可能混用 wiringPi、BCM、BOARD 等不同编号体系，必须确认后再写入当前配置。
 - 参考源码中可能存在 `GPIO.cleanup` 少写括号的问题，正确写法应为 `GPIO.cleanup()`。
 - 报告、PPT、源码和实机现象可能互相不一致；最终以当前仓库代码和实机验证为准。
-  
-  
 
 注释添加说明：需要标记方法的功能描述和参数说明，以及简单分步逻辑
