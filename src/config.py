@@ -51,6 +51,13 @@ BUZZER_PIN = 8
 SERVO_PIN = 23
 SERVO_PWM_FREQUENCY = 50
 
+# RGB LED 引脚定义：来自 Yahboom 官方示例，使用 PWM 调色。
+# R=22, G=27, B=24（BCM 编号）。PWM 频率 1000Hz。
+LED_R_PIN = 22
+LED_G_PIN = 27
+LED_B_PIN = 24
+LED_PWM_FREQUENCY = 1000
+
 # 四路巡线传感器引脚来自“环境说明/硬件接口速查手册.xlsx”的 BCM 列。
 # 传感器从小车左侧到右侧依次为：左1、左2、右1、右2。
 LINE_SENSOR_LEFT_OUTER_PIN = 3
