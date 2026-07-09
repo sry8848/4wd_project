@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>4WD 小车打车演示</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="icon-home" viewBox="0 0 24 24">
+        <path d="M3 11.5 12 4l9 7.5" />
+        <path d="M5.5 10.5V20h13v-9.5" />
+        <path d="M9.5 20v-6h5v6" />
+      </symbol>
+      <symbol id="icon-mail" viewBox="0 0 24 24">
+        <path d="M4 6h16v12H4z" />
+        <path d="m4 7 8 6 8-6" />
+      </symbol>
+      <symbol id="icon-car" viewBox="0 0 24 24">
+        <path d="M5 15h14l-1.6-5.2A2.5 2.5 0 0 0 15 8H9a2.5 2.5 0 0 0-2.4 1.8L5 15Z" />
+        <path d="M4 15v3h16v-3" />
+        <path d="M7 18.5h.1" />
+        <path d="M17 18.5h.1" />
+      </symbol>
+      <symbol id="icon-reset" viewBox="0 0 24 24">
+        <path d="M4 7v5h5" />
+        <path d="M5 12a7 7 0 1 0 2-5" />
+      </symbol>
+      <symbol id="icon-pin" viewBox="0 0 24 24">
+        <path d="M12 21s7-5.4 7-11a7 7 0 0 0-14 0c0 5.6 7 11 7 11Z" />
+        <circle cx="12" cy="10" r="2.4" />
+      </symbol>
+    </svg>
+
+    <header class="topbar">
+      <a class="logo" href="#home" data-view-link="home" aria-label="4WD 首页">4WD</a>
+      <nav class="nav-tabs" aria-label="主导航">
+        <a class="nav-tab active" href="#home" data-view-link="home">
+          <svg><use href="#icon-home"></use></svg>
+          首页
+        </a>
+        <a class="nav-tab" href="#mail" data-view-link="mail">
+          <svg><use href="#icon-mail"></use></svg>
+          查看邮箱
+        </a>
+      </nav>
+    </header>
+
+    <main class="app-shell">
+      <section id="homeView" class="page-view active" aria-label="4WD 小车打车首页">
+        <aside class="request-panel">
+          <div class="request-card">
+            <div class="request-head">
+              <h1>呼叫小车</h1>
+              <div id="carMetric" class="car-metric idle" aria-label="小车实时位置">
+                <svg><use href="#icon-car"></use></svg>
+                <strong id="carPositionText">C3</strong>
+              </div>
+            </div>
+
+            <form id="rideForm" class="ride-form">
+              <label id="startField" class="field-row route-field start-field active">
+                <span class="route-node route-circle" aria-hidden="true"></span>
+                <span class="field-body">
+                  <span class="field-label">起点</span>
+                  <input id="startInput" type="text" value="A1" list="gridPoints" autocomplete="off" />
+                </span>
+              </label>
+
+              <div id="waypointList" class="waypoint-list" aria-label="途径点列表"></div>
+
+              <div id="endField" class="field-row route-field end-field">
+                <span class="route-node route-square" aria-hidden="true"></span>
+                <label class="field-body" for="endInput">
+                  <span class="field-label">终点</span>
+                  <input id="endInput" type="text" value="E5" list="gridPoints" autocomplete="off" />
+                </label>
+                <button id="addWaypointButton" class="add-waypoint-button" type="button" aria-label="添加途径点">+</button>
+              </div>
+
+              <datalist id="gridPoints"></datalist>
+
+              <div class="form-actions">
+                <button id="callButton" class="primary-button" type="submit">
+                  <span class="button-icon" aria-hidden="true">▣</span>
+                  叫车
+                </button>
+                <button id="resetButton" class="secondary-button" type="button">
+                  <span class="button-icon" aria-hidden="true">↻</span>
+                  重置
+                </button>
+              </div>
+            </form>
+
+          </div>
+        </aside>
+
+        <section class="message-panel" aria-label="小车消息">
+          <div class="section-heading">
+            <p>4WD Dispatch</p>
+            <h2>小车消息</h2>
+          </div>
+
+          <div class="message-current">
+            <span id="messageType">系统</span>
+            <strong id="messageText">等待小车上报位置。</strong>
+          </div>
+
+          <ol id="messageList" class="message-list" aria-label="消息列表"></ol>
+        </section>
+
+        <section class="map-panel" aria-label="5x5 点位地图">
+          <div class="map-header">
+            <div>
+              <p>Grid map</p>
+              <h2 id="routeTitle">A1 → E5</h2>
+            </div>
+            <span id="etaText" class="eta-pill">待开始</span>
+          </div>
+
+          <div class="grid-map">
+            <svg id="routeSvg" class="route-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <polyline id="routePolyline" points="" />
+              <polyline id="progressPolyline" points="" />
+            </svg>
+            <div id="gridLines" class="grid-lines"></div>
+            <div id="gridPointsLayer" class="grid-points-layer"></div>
+            <div id="carMarker" class="car-marker" aria-label="小车当前位置">
+              <svg><use href="#icon-car"></use></svg>
+            </div>
+          </div>
+
+          <div class="map-legend">
+            <span><i class="legend-start"></i>起点</span>
+            <span><i class="legend-end"></i>终点</span>
+            <span><i class="legend-car"></i>小车实时位置</span>
+          </div>
+        </section>
+      </section>
+
+      <section id="mailView" class="page-view mail-view" aria-label="查看邮箱">
+        <div class="mail-card">
+          <p class="kicker">Mail status</p>
+          <h1>查看邮箱</h1>
+          <p class="muted">后期小车到达终点后，会通过树莓派后端向指定邮箱发送到达邮件。当前页面先展示邮件功能入口和模拟记录。</p>
+          <div class="mail-preview">
+            <span>最近邮件</span>
+            <strong id="mailSubject">暂无真实邮件</strong>
+            <p id="mailBody">完成行程后，前端会写入一条模拟邮件状态；真实发送逻辑可接入 `src/services/mail_sender.py`。</p>
+          </div>
+          <button class="primary-button" id="simulateMailButton" type="button">模拟到达邮件</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
