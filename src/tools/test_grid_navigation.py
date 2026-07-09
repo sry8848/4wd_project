@@ -15,7 +15,7 @@ from src.algorithms.astar import PASSABLE, format_path
 from src.hardware.line_sensor import LineSensor
 from src.hardware.motor import MotorController
 from src.hardware.ultrasonic import UltrasonicSensor
-from src.tasks.edge_follow import EdgeFollower
+from src.tasks.edge_follow import CachedObstacleSensor, EdgeFollower
 from src.tasks.grid_navigation import (
     HEADING_EAST,
     HEADING_NORTH,
@@ -118,8 +118,11 @@ def main():
     try:
         motor = MotorController()
         sensor = LineSensor()
+        obstacle_sensor = None
         if not args.no_ultrasonic:
             ultrasonic = UltrasonicSensor(threshold_cm=args.threshold)
+            ultrasonic.start_monitoring()
+            obstacle_sensor = CachedObstacleSensor(ultrasonic)
         line_follower = LineFollower(
             sensor,
             motor,
@@ -129,7 +132,7 @@ def main():
         )
         edge_follower = EdgeFollower(
             line_follower,
-            obstacle_sensor=ultrasonic,
+            obstacle_sensor=obstacle_sensor,
             turn_speed=args.spin_speed,
             uturn_seconds=args.uturn_seconds,
             delay_seconds=args.delay,

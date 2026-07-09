@@ -13,6 +13,21 @@ EDGE_RECOVERED = "recovered"
 EDGE_RECOVERY_FAILED = "recovery_failed"
 
 
+class CachedObstacleSensor:
+    """把后台监控的障碍状态暴露成 EdgeFollower 需要的 is_obstructed 接口。
+
+    参数说明：
+    source: 已启动后台监控的传感器对象，必须提供 obstacle_detected 布尔属性。
+    """
+
+    def __init__(self, source):
+        self.source = source
+
+    def is_obstructed(self):
+        """读取最近一次后台监控结果，不触发同步测距。"""
+        return bool(self.source.obstacle_detected)
+
+
 class EdgeFollower:
     """执行“从当前节点到相邻节点”的一条网格边。
 

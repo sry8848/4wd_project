@@ -206,7 +206,9 @@ UltrasonicSensor.read_distance()
 
 ```text
 ultrasonic = UltrasonicSensor(threshold_cm=args.threshold)
-edge_follower = EdgeFollower(..., obstacle_sensor=ultrasonic, ...)
+ultrasonic.start_monitoring()
+obstacle_sensor = CachedObstacleSensor(ultrasonic)
+edge_follower = EdgeFollower(..., obstacle_sensor=obstacle_sensor, ...)
 ```
 
 文件：`src/tasks/edge_follow.py`
@@ -216,19 +218,19 @@ edge_follower = EdgeFollower(..., obstacle_sensor=ultrasonic, ...)
 - 进入边前。
 - 边中途每轮巡线前。
 
-这里有一个关键问题：当前 `EdgeFollower` 调用的是同步 `is_obstructed()`。如果没有传入 distance，`is_obstructed()` 会调用 `read_filtered()`，也就是每次巡线前都可能做多次超声测距。
+当前入口传入的是 `CachedObstacleSensor`，它的 `is_obstructed()` 只读取 `UltrasonicSensor.obstacle_detected` 缓存值，不触发同步测距。`UltrasonicSensor.start_monitoring()` 在后台线程里持续更新这个缓存值。
 
 这意味着：
 
 ```text
 一次巡线 step 之前
-可能先等超声波测距完成
-然后才读巡线传感器和修正方向
+只读取最近一次后台监控结果
+然后立刻读巡线传感器和修正方向
 ```
 
-如果超声回波不稳定，巡线闭环会变慢。你描述的“歪歪扭扭然后慢慢扭出去”，非常符合“巡线反馈频率太低”的现象。
+这样可以避免超声回波不稳定时拖慢巡线闭环。纯巡线测试仍然可以传 `--no-ultrasonic`，让入口完全不创建超声对象。
 
-重要纠正：把 `--threshold` 设成 1 只能减少“被判定为障碍”的概率，不能避免同步测距本身带来的等待。因此它不能真正关闭超声对巡线闭环的影响。
+重要口径：`--threshold` 只改变“多少厘米算障碍”；`--no-ultrasonic` 才是关闭超声障碍检测的开关。
 
 ### 4.3 当前遇障碍后的地图处理
 
@@ -397,9 +399,9 @@ else:
 这点对实车很重要：
 
 - 旧项目巡线循环不直接等待超声测距。
-- 当前项目每轮巡线前同步调用 `is_obstructed()`，可能等待 `read_filtered()`。
+- 当前项目已经改为后台监控，巡线循环只读取缓存的 `obstacle_detected`。
 
-所以从旧项目反推，当前第一版网格导航更应该把超声改成“后台监控 + 边执行读取缓存状态”，而不是每个巡线 step 前同步测距。
+所以当前实现已经吸收了旧项目更适合实车闭环的一点：超声测距在后台进行，边执行只读取缓存状态。
 
 ### 7.4 旧项目遇障碍后的恢复
 
@@ -437,7 +439,7 @@ if not run_track():
 | 外侧传感器 | 普通左右修正 | 强制原地修正 | 合并进左右修正 |
 | 节点判断 | 内侧两路 + 至少一个外侧 | 无网格节点概念 | 四路全黑 |
 | 离开起点节点 | 根据传感器状态离开 | 无 | 固定前进 0.2 秒 |
-| 超声避障 | 当前同步测距 | 独立避障动作 | 后台线程更新布尔值 |
+| 超声避障 | 后台线程更新缓存，边执行读取缓存 | 独立避障动作 | 后台线程更新布尔值 |
 | 障碍更新地图 | 封锁当前边 | 无地图 | 多数场景标记下一个节点 |
 | 中途障碍恢复 | 掉头 + 正向巡线回上一节点 | 无 | 掉头 + `run_track_back()` |
 
@@ -451,13 +453,13 @@ if not run_track():
 
 从源码对照看，最可疑的不是 A*，而是这两点：
 
-### 9.1 超声同步测距拖慢巡线闭环
+### 9.1 超声测距已改为后台监控
 
 当前 `EdgeFollower.follow_edge()` 每轮先 `_is_obstructed()`，再 `line_follower.step()`。
 
-如果 `_is_obstructed()` 内部调用 `read_filtered()`，巡线动作之间的间隔可能明显变大。车在等待超声时仍保持上一个电机动作，反馈变慢，就容易越偏越多。
+入口层传给 `EdgeFollower` 的是 `CachedObstacleSensor`。它只读取后台线程维护的 `obstacle_detected`，不调用 `read_filtered()`，所以不会在每个巡线 step 前等待超声测距。
 
-旧项目用后台线程更新 `obstacle_detected`，巡线循环不等待测距，这是一个更适合实车闭环的方案。
+如果继续出现“歪歪扭扭然后慢慢出线”，下一步应优先看左右修正速度、外侧传感器强修正和电机左右动力差异，而不是继续怀疑同步超声测距。
 
 ### 9.2 左右修正缺少旧项目的不对称补偿
 
@@ -511,10 +513,10 @@ right(100, 0)
 
 基于这次对照，后续建议按优先级改：
 
-1. 给网格导航实机入口增加“纯巡线模式”或 `--no-ultrasonic`。
+1. 给网格导航实机入口增加“纯巡线模式”或 `--no-ultrasonic`。（已完成）
    目的：先让 `A1 -> A2` 不受超声测距阻塞影响。
 
-2. 把网格导航里的超声障碍检测改成后台监控。
+2. 把网格导航里的超声障碍检测改成后台监控。（已完成）
    目的：边执行循环只读取缓存的 `obstacle_detected`，不要每轮同步测距。
 
 3. 让左右修正速度分开配置。

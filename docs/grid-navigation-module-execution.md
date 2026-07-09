@@ -106,6 +106,8 @@ astar(grid, start, end, blocked_edges=None)
 
 第一版网格导航只需要在“准备进入下一条边前”和“沿边行驶过程中”读取前方是否被挡。超声波只产生障碍事实，不负责决定怎么转弯、封边或重规划。
 
+实机入口启用超声时，会先调用 `UltrasonicSensor.start_monitoring()`，再通过 `CachedObstacleSensor` 把后台缓存的 `obstacle_detected` 暴露给 `EdgeFollower`。这样边执行循环只读取缓存值，不在每个巡线 step 前同步测距。
+
 ### 2.7 `src/tasks/reverse_radar.py`
 
 封装倒车雷达提示。
@@ -126,6 +128,7 @@ astar(grid, start, end, blocked_edges=None)
 
 ```python
 class EdgeFollower:
+    # CachedObstacleSensor 也定义在本模块，用于读取超声后台缓存。
     def follow_edge(self, max_seconds):
         ...
 
@@ -135,11 +138,11 @@ class EdgeFollower:
 
 `follow_edge()` 的核心流程：
 
-1. 进入边前调用超声波判断前方是否有障碍。
+1. 进入边前读取缓存的障碍状态，判断前方是否有障碍。
 2. 如果有障碍，立即返回 `blocked_before_entering`，不进入该边。
 3. 先离开当前十字节点，再开始识别下一个节点，避免把起点误判成终点。
 4. 循环调用 `LineFollower.step()` 做基础巡线。
-5. 循环中持续检查超声波、节点检测和超时。
+5. 循环中持续读取缓存障碍状态、节点检测和超时。
 6. 到达下一个节点时停车，返回 `reached_node`。
 7. 中途遇障碍时停车，返回 `blocked_mid_edge`。
 8. 超时、丢线或异常时停车，返回失败状态。
@@ -192,14 +195,15 @@ class GridNavigator:
 
 ```text
 入口工具解析参数
--> 创建 MotorController / LineSensor / LineFollower / UltrasonicSensor / EdgeFollower / GridNavigator
+-> 创建 MotorController / LineSensor / LineFollower / UltrasonicSensor / CachedObstacleSensor / EdgeFollower / GridNavigator
+-> UltrasonicSensor.start_monitoring() 后台更新 obstacle_detected
 -> GridNavigator.navigate(start, end, initial_heading)
 -> A* 规划路径
 -> 取下一节点
 -> 根据 current_node 和 next_node 计算目标朝向
 -> MotorController.spin_left 或 spin_right 完成转向
 -> EdgeFollower.follow_edge()
-   -> 进入边前超声波确认无障碍
+   -> 进入边前读取缓存障碍状态，确认无障碍
    -> 离开当前十字节点
    -> LineFollower.step() 循环巡线
    -> 检测到下一个十字节点
@@ -215,7 +219,7 @@ class GridNavigator:
 当前在 A1，计划走向 A2
 -> 转向到 A1->A2
 -> EdgeFollower.follow_edge()
-   -> UltrasonicSensor.is_obstructed() == True
+   -> CachedObstacleSensor.is_obstructed() == True
    -> 不进入该边，brake()
    -> 返回 blocked_before_entering
 -> GridNavigator 把 frozenset({A1, A2}) 加入 dynamic_blocked_edges
@@ -228,7 +232,8 @@ class GridNavigator:
 
 ```text
 当前在 A1，正在走向 A2
--> 巡线过程中超声波发现障碍
+-> 超声后台监控把 obstacle_detected 更新为 True
+-> 巡线过程中 EdgeFollower 读取缓存发现障碍
 -> EdgeFollower 立即 brake()
 -> 返回 blocked_mid_edge
 -> GridNavigator 调用 recover_to_start_node()
@@ -248,7 +253,7 @@ flowchart TD
     A["PLAN: 从当前节点规划到终点"] --> B{"找到路径?"}
     B -- "否" --> Z["FAILED: 停车并报告无路可走"]
     B -- "是" --> C["TURN: 转向下一条边"]
-    C --> D["CHECK: 进入边前超声波检测"]
+    C --> D["CHECK: 进入边前读取缓存障碍状态"]
     D -- "有障碍" --> H["MARK_EDGE_BLOCKED: 封锁当前边"]
     H --> A
     D -- "无障碍" --> E["FOLLOW: 巡线执行当前边"]
