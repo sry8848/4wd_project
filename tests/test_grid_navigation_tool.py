@@ -202,6 +202,41 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertEqual(line_follower.left_turn_speed, 80)
         self.assertEqual(line_follower.right_turn_speed, 100)
 
+    def test_line_debug_passes_stdout_to_line_follower(self):
+        args = [
+            "test_grid_navigation",
+            "--rows",
+            "3",
+            "--cols",
+            "5",
+            "--start",
+            "A1",
+            "--end",
+            "A2",
+            "--heading",
+            "east",
+            "--line-debug",
+            "--no-ultrasonic",
+        ]
+        output = io.StringIO()
+
+        with patch.object(sys, "argv", args), patch.object(
+            tool, "MotorController", return_value=FakeMotor()
+        ), patch.object(tool, "LineSensor", return_value=FakeLineSensor()), patch.object(
+            tool, "EdgeFollower", FakeEdgeFollower
+        ), patch.object(
+            tool, "GridNavigator", FakeGridNavigator
+        ), redirect_stdout(
+            output
+        ):
+            try:
+                tool.main()
+            except SystemExit as exc:
+                self.fail(f"--line-debug should be accepted: {exc}")
+
+        line_follower = FakeEdgeFollower.instances[0].line_follower
+        self.assertIs(line_follower.debug_output, output)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -101,6 +101,7 @@ and (left_outer == black or right_outer == black)
 - `--line-left-turn-speed` 默认不传；不传时使用 `--line-turn-speed`。
 - `--line-right-turn-speed` 默认不传；不传时使用 `--line-turn-speed`。
 - `--search-speed` 默认 8。
+- `--line-debug` 默认关闭；开启后每轮打印四路读数、节点判断、动作和电机命令。
 - 你实测时传过 `--forward-speed 15 --line-turn-speed 50 --search-speed 6`。
 
 现在可以直接用不对称补偿参数贴近旧项目：左修正 `left(0,80)`，右修正 `right(100,0)`。
@@ -542,7 +543,7 @@ python3 -m src.tools.test_grid_navigation \
 3. 让左右修正速度分开配置。（已完成）
    目的：支持旧项目的 `left(0,80)`、`right(100,0)` 这种实车补偿。
 
-4. 增加巡线调试输出模式。
+4. 增加巡线调试输出模式。（已完成）
    目的：打印每轮四路读数和动作，定位是传感器判断错、修正方向错、速度不合适，还是节点判断错。
 
 5. 再测试动态障碍重规划。

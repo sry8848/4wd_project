@@ -10,6 +10,7 @@ Testing notes:
 """
 
 import argparse
+import sys
 
 from src.algorithms.astar import PASSABLE, format_path
 from src.hardware.line_sensor import LineSensor
@@ -68,6 +69,11 @@ def parse_args():
         "--no-ultrasonic",
         action="store_true",
         help="disable ultrasonic obstacle checks for pure line-following tests",
+    )
+    parser.add_argument(
+        "--line-debug",
+        action="store_true",
+        help="print line sensor readings, node decision, action, and motor command every step",
     )
     return parser.parse_args()
 
@@ -143,6 +149,7 @@ def main():
             left_turn_speed=args.line_left_turn_speed,
             right_turn_speed=args.line_right_turn_speed,
             search_speed=args.search_speed,
+            debug_output=sys.stdout if args.line_debug else None,
         )
         edge_follower = EdgeFollower(
             line_follower,

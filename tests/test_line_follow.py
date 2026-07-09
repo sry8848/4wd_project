@@ -1,3 +1,4 @@
+import io
 import unittest
 
 from src.hardware.line_sensor import LineReading
@@ -142,6 +143,28 @@ class LineFollowerTest(unittest.TestCase):
 
         self.assertEqual(action, ACTION_RIGHT)
         self.assertEqual(motor.calls, [("right", 100, 0)])
+
+    def test_step_prints_line_debug_when_debug_output_is_enabled(self):
+        sensor = FakeSensor([LineReading(False, True, False, False)])
+        motor = FakeMotor()
+        debug_output = io.StringIO()
+        follower = LineFollower(
+            sensor,
+            motor,
+            forward_speed=20,
+            turn_speed=70,
+            left_turn_speed=80,
+            search_speed=8,
+            debug_output=debug_output,
+        )
+
+        action = follower.step()
+
+        self.assertEqual(action, ACTION_LEFT)
+        self.assertEqual(
+            debug_output.getvalue(),
+            "line_debug LO=0 LI=1 RI=0 RO=0 node=0 action=left motor=left(0,80)\n",
+        )
 
     def test_run_track_brakes_and_returns_true_after_reaching_node(self):
         sensor = FakeSensor(

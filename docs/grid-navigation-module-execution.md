@@ -76,6 +76,7 @@ astar(grid, start, end, blocked_edges=None)
 - `decide_line_action(reading)`：根据四路读数决定 `forward`、`left`、`right`、`search_left` 或 `node`。
 - `LineFollower.step()`：执行一次“读取传感器 -> 判断动作 -> 控制电机”。
 - `LineFollower.run_track(max_seconds, delay_seconds=0.02)`：沿线行驶，直到检测到节点或超时。
+- `LineFollower(..., debug_output=None)`：可选调试输出流；实机入口传入 `--line-debug` 时，每轮打印四路读数、节点判断、动作和电机命令。
 
 `LineFollower` 只知道如何沿黑线走和如何识别节点，不知道当前坐标、下一节点、A* 路径或障碍地图。完整网格导航不能把坐标状态塞进这里，否则巡线层会和导航层耦合。
 

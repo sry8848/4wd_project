@@ -67,6 +67,7 @@ class LineFollower:
         search_speed=8,
         left_turn_speed=None,
         right_turn_speed=None,
+        debug_output=None,
     ):
         """保存循迹任务所需的硬件对象和速度参数。
 
@@ -78,6 +79,7 @@ class LineFollower:
         left_turn_speed: 左修正时右侧电机 PWM 占空比；不传时使用 turn_speed。
         right_turn_speed: 右修正时左侧电机 PWM 占空比；不传时使用 turn_speed。
         search_speed: 丢线后原地左旋搜索的 PWM 占空比。
+        debug_output: 可选文本输出流；传入时每轮打印巡线读数、动作和电机命令。
         """
         self.sensor = sensor
         self.motor = motor
@@ -86,6 +88,7 @@ class LineFollower:
         self.left_turn_speed = turn_speed if left_turn_speed is None else left_turn_speed
         self.right_turn_speed = turn_speed if right_turn_speed is None else right_turn_speed
         self.search_speed = search_speed
+        self.debug_output = debug_output
 
     def step(self):
         """执行一次“读取传感器 -> 判断动作 -> 控制电机”的循迹步骤。
@@ -98,14 +101,32 @@ class LineFollower:
 
         if action == ACTION_NODE:
             self.motor.brake()
+            motor_command = "brake()"
         elif action == ACTION_FORWARD:
             self.motor.forward(self.forward_speed, self.forward_speed)
+            motor_command = f"forward({self.forward_speed},{self.forward_speed})"
         elif action == ACTION_LEFT:
             self.motor.left(0, self.left_turn_speed)
+            motor_command = f"left(0,{self.left_turn_speed})"
         elif action == ACTION_RIGHT:
             self.motor.right(self.right_turn_speed, 0)
+            motor_command = f"right({self.right_turn_speed},0)"
         else:
             self.motor.spin_left(self.search_speed, self.search_speed)
+            motor_command = f"spin_left({self.search_speed},{self.search_speed})"
+
+        if self.debug_output is not None:
+            self.debug_output.write(
+                "line_debug "
+                f"LO={int(reading.left_outer)} "
+                f"LI={int(reading.left_inner)} "
+                f"RI={int(reading.right_inner)} "
+                f"RO={int(reading.right_outer)} "
+                f"node={int(action == ACTION_NODE)} "
+                f"action={action} "
+                f"motor={motor_command}\n"
+            )
+            self.debug_output.flush()
 
         return action
 
