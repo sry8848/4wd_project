@@ -28,6 +28,14 @@ class MotorController:
         self.gpio = gpio
         self._pwm_left = None
         self._pwm_right = None
+        self.pins = (
+            config.MOTOR_ENA,
+            config.MOTOR_IN1,
+            config.MOTOR_IN2,
+            config.MOTOR_ENB,
+            config.MOTOR_IN3,
+            config.MOTOR_IN4,
+        )
         self._setup_gpio()
 
     def forward(self, left_speed, right_speed):
@@ -123,7 +131,7 @@ class MotorController:
             # stop() 停止 PWM 输出，cleanup() 释放本程序占用过的 GPIO 状态。
             self._pwm_left.stop()
             self._pwm_right.stop()
-            self.gpio.cleanup()
+            self.gpio.cleanup(self.pins)
 
     def _setup_gpio(self):
         # config.py 中保存的是 BCM 编号，所以这里必须使用 GPIO.BCM。

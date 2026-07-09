@@ -1,12 +1,4 @@
-"""Manual camera capture test.
-
-Run on the Raspberry Pi from the project root:
-
-    python3 src/tools/test_camera.py --device 0
-
-If the camera cannot be opened, try another device index and check whether a
-video streaming service is already using the camera.
-"""
+"""Manual camera capture test with visible progress output."""
 
 from __future__ import annotations
 
@@ -25,10 +17,19 @@ from src.hardware.camera import CameraCaptureError, build_photo_path, capture_ph
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Capture one camera photo.")
     parser.add_argument(
+        "--backend",
+        choices=("auto", "opencv", "libcamera", "raspistill"),
+        default="auto",
+        help=(
+            "Capture backend. Use opencv for USB cameras; libcamera or "
+            "raspistill for CSI cameras."
+        ),
+    )
+    parser.add_argument(
         "--device",
         type=int,
         default=0,
-        help="OpenCV camera device index, usually 0 or 1.",
+        help="OpenCV camera device index. Ignored by libcamera backend.",
     )
     parser.add_argument(
         "--output",
@@ -87,9 +88,17 @@ def main() -> int:
         extension=args.extension,
     )
 
+    print("Camera test started.", flush=True)
+    print(f"Project root: {PROJECT_ROOT}", flush=True)
+    print(f"Backend: {args.backend}", flush=True)
+    print(f"Device index: {args.device}", flush=True)
+    print(f"Output path: {output_path}", flush=True)
+
     try:
+        print("Opening camera and capturing one frame...", flush=True)
         result = capture_photo(
             output_path=output_path,
+            backend=args.backend,
             device_index=args.device,
             width=args.width,
             height=args.height,
@@ -106,10 +115,12 @@ def main() -> int:
         return 1
 
     print(f"Saved photo: {result.path}")
-    print(
-        f"Device: {result.device_index}, "
-        f"resolution: {result.width}x{result.height}"
-    )
+    print(f"Backend: {result.backend}")
+    if result.device_index is not None:
+        print(f"Device: {result.device_index}")
+    if result.width and result.height:
+        print(f"Resolution: {result.width}x{result.height}")
+    print("Camera test finished.")
     return 0
 
 

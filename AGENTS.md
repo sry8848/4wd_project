@@ -20,8 +20,6 @@
 
 - 常用密码：`yahboom`
 
-
-
 注意：树莓派上 `python` 指向 Python 2.7。
 
 # Working Principles
@@ -165,6 +163,88 @@ rg --files docs 环境说明 参考项目 src
 - 参考源码有问题时，应该删除重写或重构迁移，不要保留错误历史兼容层。
 - 实机测试必须有明确停车路径；电机、舵机、GPIO 相关代码要确保异常时也能停止或释放资源。
 
+# Architecture Rules
+
+## 1. 分层职责
+
+- `src/config.py`
+  
+  - 只放已确认的非敏感配置，例如 GPIO BCM 编号、PWM 频率、阈值、默认路径。
+  - 引脚来源必须能追溯到 `环境说明/硬件接口速查手册.xlsx`、厂商示例或实机验证结论。
+  - 不在业务代码里为同一硬件写多套引脚兜底；引脚不确定时先查证或实测。
+
+- `src/hardware/`
+  
+  - 只封装单个硬件能力，例如电机转动、传感器读数、蜂鸣器发声、LED 亮灭、摄像头拍照。
+  - 可以 import `RPi.GPIO`、`cv2` 等硬件相关库。
+  - 不写业务流程，不判断“为什么现在要倒车/报警/拍照/循迹”。
+  - 不直接调用其它无关硬件。例如 `MotorController` 不应该知道蜂鸣器，`Buzzer` 不应该知道小车是否在倒车。
+
+- `src/algorithms/`
+  
+  - 放纯算法，例如 A*、摩斯码转换、路径格式化。
+  - 默认不 import `RPi.GPIO`、`cv2`、网络库或真实硬件模块。
+  - 能在 Windows 本地用单元测试验证。
+
+- `src/tasks/`
+  
+  - 放逻辑编排，例如循迹到节点、倒车雷达、播放摩斯码、巡逻流程。
+  - 可以组合 `hardware` 和 `algorithms`，但不要直接操作 GPIO。
+  - 优先通过构造参数传入硬件对象，便于测试和复用。只有非常小的手动演示任务可以临时创建硬件对象，但要在注释中说明原因。
+  - 默认不负责最终资源释放；资源生命周期由入口层统一管理。若 task 自己创建了硬件对象，必须明确说明它拥有这些对象，并在 `close()` 中释放。
+
+- `src/network/`
+  
+  - 放网络通信能力，例如图片 TCP 发送/接收、协议编解码、连接超时和传输错误。
+  - 不直接操作 GPIO、电机、摄像头等硬件。
+  - 不保存 IP、密码、邮箱授权码、API Key、微信密钥等敏感信息；地址和端口由入口参数传入。
+  - 协议必须有明确的数据边界，例如长度头、文件大小、超时和错误返回。
+
+- `src/tools/` 或未来 `main.py`
+  
+  - 只做入口层：解析命令行参数、创建硬件对象、调用 task、打印结果、在最外层 `finally` 中统一停止和释放资源。
+  - 不把复杂流程全部堆在 `main()` 里。超过一个简单硬件动作的流程，应下沉到 `src/tasks/`。
+
+## 2. GPIO 生命周期与资源所有权
+
+- 每个硬件类只能清理自己初始化并拥有的 GPIO 引脚。
+
+- 硬件类应保存自己的 `pins`，`close()` 中使用 `GPIO.cleanup(self.pins)`，不要在可复用硬件类里调用无参数 `GPIO.cleanup()`。
+
+- `close()` 必须先把硬件置于安全状态，再释放资源：
+  
+  - 电机：先 `brake()`，再停止 PWM，再 cleanup 电机 pins。
+  - 蜂鸣器：先 `off()`，再 cleanup 蜂鸣器 pin。
+  - LED：先熄灭，再 cleanup LED pins。
+  - 后台线程：先停止线程并 join，再 cleanup。
+
+- 组合功能中不要中途调用某个硬件的 `close()`。例如“倒车 + 蜂鸣器报警”应先完成任务，再在入口层统一关闭蜂鸣器和电机。
+
+- 如果两个硬件声明使用同一个物理 GPIO，例如蜂鸣器和按键都使用 BCM 8，必须报告为引脚冲突；不要写兼容分支把同一引脚同时当输入和输出。
+
+- 顶层入口可以在程序最终退出时统一关闭所有硬件对象，但不应依赖某个硬件类的全局 cleanup 去顺便清理其它模块。
+
+## 3. 组合动作示例
+
+“倒车时蜂鸣器报警”的正确边界：
+
+```text
+src/hardware/motor.py       -> 只提供 backward()/brake()/close()
+src/hardware/buzzer.py      -> 只提供 beep()/on()/off()/close()
+src/tasks/reverse_warning.py -> 编排“倒车期间间歇蜂鸣”
+src/tools/test_reverse_warning.py 或 main.py -> 创建对象、调用 task、finally 中统一 close
+```
+
+不要把倒车报警直接写进 `MotorController.backward()`，否则电机层会依赖蜂鸣器，后续单独测试电机、替换提示方式或关闭声音都会变复杂。
+
+## 4. 测试与验证边界
+
+- 纯算法必须优先写本地单元测试。
+- 硬件边界可以用假 GPIO 测试关键输出顺序，例如 setup、output、cleanup 的 pins 是否正确。
+- 实机工具放在 `src/tools/`，每个工具只验证一个硬件或一个小任务。
+- 电机、舵机、蜂鸣器等会产生物理动作的测试必须限制时长，并确保 `finally` 中停止动作。
+- 不能为了测试暴露测试专用字段、测试分支或测试 hook。优先通过构造参数注入假对象。
+
 # Known Risks
 
 - 参考源码可能存在硬编码 IP、邮箱授权码、API Key、微信密钥等敏感信息。
@@ -174,3 +254,37 @@ rg --files docs 环境说明 参考项目 src
 - 报告、PPT、源码和实机现象可能互相不一致；最终以当前仓库代码和实机验证为准。
 
 注释添加说明：需要标记方法的功能描述和参数说明，以及简单分步逻辑
+
+
+
+标准操作流程
+开始修改前：
+
+git status
+git pull --rebase origin main
+修改完成后：
+
+git status
+git add .
+git commit -m "简要说明本次修改"
+git pull --rebase origin main
+git push origin main
+如果 rebase 过程中出现冲突：
+
+git status
+然后打开冲突文件，删除冲突标记：
+
+保留最终正确代码，解决后继续：
+
+git add .
+git rebase --continue
+如果冲突处理混乱，取消本次 rebase：
+
+git rebase --abort
+禁止操作
+禁止执行：
+
+git push --force origin main
+除非用户明确要求，否则也不要执行：
+
+git push --force-with-lease origin main

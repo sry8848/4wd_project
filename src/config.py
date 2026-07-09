@@ -42,10 +42,21 @@ ULTRASONIC_THRESHOLD = 20
 # 每次测距采样次数：多次取中位数可降低单次异常值的干扰。
 ULTRASONIC_SAMPLES = 3
 
-# 舵机引脚：ServoPin = 23 来自 Yahboom 官方示例“servo_ultrasonic_avoid.py”。
+# 蜂鸣器引脚：BCM 8。
+# 注意：此引脚与按键(key=8)共用同一 GPIO，有源蜂鸣器，HIGH 发声。
+BUZZER_PIN = 8
+
+# 舵机引脚：ServoPin = 23 来自 Yahboom 官方示例”servo_ultrasonic_avoid.py”。
 # 舵机 PWM 频率固定为 50 Hz（周期 20ms），这是标准舵机的工作频率。
 SERVO_PIN = 23
 SERVO_PWM_FREQUENCY = 50
+
+# RGB LED 引脚定义：来自 Yahboom 官方示例，使用 PWM 调色。
+# R=22, G=27, B=24（BCM 编号）。PWM 频率 1000Hz。
+LED_R_PIN = 22
+LED_G_PIN = 27
+LED_B_PIN = 24
+LED_PWM_FREQUENCY = 1000
 
 # 四路巡线传感器引脚来自“环境说明/硬件接口速查手册.xlsx”的 BCM 列。
 # 传感器从小车左侧到右侧依次为：左1、左2、右1、右2。
