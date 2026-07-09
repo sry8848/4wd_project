@@ -42,7 +42,11 @@ ULTRASONIC_THRESHOLD = 20
 # 每次测距采样次数：多次取中位数可降低单次异常值的干扰。
 ULTRASONIC_SAMPLES = 3
 
-# 舵机引脚：ServoPin = 23 来自 Yahboom 官方示例“servo_ultrasonic_avoid.py”。
+# 蜂鸣器引脚：BCM 8。
+# 注意：此引脚与按键(key=8)共用同一 GPIO，有源蜂鸣器，HIGH 发声。
+BUZZER_PIN = 8
+
+# 舵机引脚：ServoPin = 23 来自 Yahboom 官方示例”servo_ultrasonic_avoid.py”。
 # 舵机 PWM 频率固定为 50 Hz（周期 20ms），这是标准舵机的工作频率。
 SERVO_PIN = 23
 SERVO_PWM_FREQUENCY = 50
