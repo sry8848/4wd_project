@@ -52,6 +52,11 @@ def parse_args():
     parser.add_argument("--recovery-timeout", type=float, default=5)
     parser.add_argument("--delay", type=float, default=0.02)
     parser.add_argument("--threshold", type=int, default=None, help="ultrasonic obstacle threshold cm")
+    parser.add_argument(
+        "--no-ultrasonic",
+        action="store_true",
+        help="disable ultrasonic obstacle checks for pure line-following tests",
+    )
     return parser.parse_args()
 
 
@@ -113,7 +118,8 @@ def main():
     try:
         motor = MotorController()
         sensor = LineSensor()
-        ultrasonic = UltrasonicSensor(threshold_cm=args.threshold)
+        if not args.no_ultrasonic:
+            ultrasonic = UltrasonicSensor(threshold_cm=args.threshold)
         line_follower = LineFollower(
             sensor,
             motor,
