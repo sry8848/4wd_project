@@ -135,9 +135,9 @@ class LineFollowerTest(unittest.TestCase):
             search_speed=8,
         )
 
-        action = follower.step()
+        result = follower.step()
 
-        self.assertEqual(action, ACTION_LEFT)
+        self.assertEqual(result.action, ACTION_LEFT)
         self.assertEqual(motor.calls, [("left", 0, 80)])
 
     def test_step_uses_right_turn_speed_for_right_correction(self):
@@ -152,9 +152,9 @@ class LineFollowerTest(unittest.TestCase):
             search_speed=8,
         )
 
-        action = follower.step()
+        result = follower.step()
 
-        self.assertEqual(action, ACTION_RIGHT)
+        self.assertEqual(result.action, ACTION_RIGHT)
         self.assertEqual(motor.calls, [("right", 100, 0)])
 
     def test_step_prints_line_debug_when_debug_output_is_enabled(self):
@@ -171,9 +171,9 @@ class LineFollowerTest(unittest.TestCase):
             debug_output=debug_output,
         )
 
-        action = follower.step()
+        result = follower.step()
 
-        self.assertEqual(action, ACTION_LEFT)
+        self.assertEqual(result.action, ACTION_LEFT)
         self.assertEqual(
             debug_output.getvalue(),
             "line_debug LO=0 LI=1 RI=0 RO=0 node=0 action=left motor=left(0,80)\n",
@@ -215,9 +215,9 @@ class LineFollowerTest(unittest.TestCase):
         motor = FakeMotor()
         follower = LineFollower(sensor, motor, 20, 70, 6)
 
-        action = follower.step()
+        result = follower.step()
 
-        self.assertEqual(action, ACTION_SEARCH_LEFT)
+        self.assertEqual(result.action, ACTION_SEARCH_LEFT)
         self.assertEqual(motor.calls, [("spin_left", 6, 6)])
 
 
