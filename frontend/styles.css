@@ -114,7 +114,7 @@ svg {
 }
 
 #homeView {
-  grid-template-columns: 300px minmax(340px, 1fr) minmax(540px, 1.05fr);
+  grid-template-columns: 320px minmax(330px, 1fr) minmax(520px, 1.05fr);
   height: calc(100dvh - 64px);
   min-height: 0;
   overflow: hidden;
@@ -666,7 +666,12 @@ body.selecting-end .grid-point.waypoint {
   color: white;
   border: 3px solid white;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
-  transition: left 700ms ease, top 700ms ease;
+  opacity: 0;
+  transition: left 700ms ease, top 700ms ease, opacity 160ms ease;
+}
+
+.car-marker.is-positioned {
+  opacity: 1;
 }
 
 .car-marker svg {
@@ -753,7 +758,7 @@ body.selecting-end .legend-end {
 
 @media (max-width: 1240px) {
   #homeView {
-    grid-template-columns: 290px 320px minmax(500px, 1fr);
+    grid-template-columns: 300px 320px minmax(500px, 1fr);
   }
 
   .request-panel,

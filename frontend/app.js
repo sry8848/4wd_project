@@ -135,24 +135,10 @@ function updateRouteTitle() {
   routeTitle.textContent = getRouteStops().join(" → ");
 }
 
-function speak(message) {
-  if (!("speechSynthesis" in window)) {
-    return;
-  }
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(message);
-  utterance.lang = "zh-CN";
-  utterance.rate = 1;
-  window.speechSynthesis.speak(utterance);
-}
-
-function setMessage(type, text, announce = false) {
+function setMessage(type, text) {
   messageType.textContent = type;
   messageText.textContent = text;
   addMessage(type, text);
-  if (announce) {
-    speak(text);
-  }
 }
 
 function addMessage(type, text) {
@@ -169,6 +155,7 @@ function setCarPoint(point) {
   const pos = pointToPercent(point);
   carMarker.style.left = `${pos.left}%`;
   carMarker.style.top = `${pos.top}%`;
+  carMarker.classList.add("is-positioned");
 }
 
 function setCarBusy(isBusy) {
@@ -375,10 +362,10 @@ function startRide(start, end) {
   routeTitle.textContent = routeLabel;
   etaText.textContent = "派单中";
   setCarBusy(true);
-  setMessage("乘客", `请求路线 ${routeLabel}`, true);
+  setMessage("乘客", `请求路线 ${routeLabel}`);
 
   schedule(1000, () => {
-    setMessage("小车", `收到叫车请求，当前上报位置 ${carPoint}`, true);
+    setMessage("小车", `收到叫车请求，当前上报位置 ${carPoint}`);
     etaText.textContent = "来车中";
   });
 
@@ -402,7 +389,7 @@ function startRide(start, end) {
       progressPolyline.setAttribute("points", pathToSvgPoints(fullPath.slice(0, index + 1)));
       if (point === start) {
         etaText.textContent = "已到起点";
-        setMessage("小车", `已到达起点 ${start}，请上车`, true);
+        setMessage("小车", `已到达起点 ${start}，请上车`);
       } else if (index > pickupPath.length - 1 && point !== end) {
         etaText.textContent = `当前位置 ${point}`;
       } else if (point === end) {
@@ -415,7 +402,7 @@ function startRide(start, end) {
     setCarPoint(end);
     etaText.textContent = "已到达";
     setCarBusy(false);
-    setMessage("小车", `已到达终点 ${end}，即将发送到达邮件`, true);
+    setMessage("小车", `已到达终点 ${end}，即将发送到达邮件`);
     mailSubject.textContent = `4WD 小车到达通知：${end}`;
     mailBody.textContent = `模拟邮件：小车已完成路线 ${routeLabel}，当前位置 ${end}。后期可由树莓派实际发送。`;
     callButton.disabled = false;
@@ -445,9 +432,6 @@ function resetRide(options = {}) {
     setMessage("系统", "等待小车上报位置。");
   }
   setActiveTarget("start");
-  if ("speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
-  }
 }
 
 function switchView(viewName) {
@@ -535,7 +519,7 @@ rideForm.addEventListener("submit", (event) => {
     renderWaypoints();
     startRide(start, end);
   } catch (error) {
-    setMessage("系统", error.message, true);
+    setMessage("系统", error.message);
   }
 });
 
