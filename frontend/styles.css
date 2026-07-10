@@ -114,7 +114,7 @@ svg {
 }
 
 #homeView {
-  grid-template-columns: 320px minmax(330px, 1fr) minmax(520px, 1.05fr);
+  grid-template-columns: 360px minmax(310px, 1fr) minmax(520px, 1.05fr);
   height: calc(100dvh - 64px);
   min-height: 0;
   overflow: hidden;
@@ -171,6 +171,42 @@ h2 {
   font-size: 28px;
   line-height: 1.15;
   letter-spacing: -0.035em;
+}
+
+#routeTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+}
+
+.route-stop {
+  position: relative;
+  display: inline-flex;
+  padding-bottom: 7px;
+  color: var(--ink);
+  transition: color 180ms ease;
+}
+
+.route-stop.passed {
+  color: #a0a0a0;
+}
+
+.route-stop.current::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateX(-50%);
+}
+
+.route-separator {
+  color: #8a8a8a;
+  line-height: 1;
 }
 
 .muted {
@@ -246,7 +282,7 @@ h2 {
   height: 14px;
   place-self: center;
   background: var(--canvas);
-  border: 4px solid var(--ink);
+  border: 4px solid var(--inactive-point);
 }
 
 .route-circle {
@@ -314,6 +350,14 @@ h2 {
 .field-row.active {
   border-color: var(--ink);
   background: var(--canvas);
+}
+
+.field-row.active .route-node {
+  border-color: var(--ink);
+}
+
+.field-row.active .field-label {
+  color: var(--ink);
 }
 
 .field-body {
@@ -573,16 +617,20 @@ h2 {
   left: 10%;
   right: 10%;
   height: 2px;
+  transform: translateY(-50%);
 }
 
 .grid-line.vertical {
   top: 10%;
   bottom: 10%;
   width: 2px;
+  transform: translateX(-50%);
 }
 
 .route-svg {
   z-index: 2;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
@@ -590,16 +638,18 @@ h2 {
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 #routePolyline {
-  stroke: #d0d0d0;
-  stroke-width: 2.1;
+  stroke: #b4b4b4;
+  stroke-width: 2.5;
+  stroke-dasharray: 6 6;
 }
 
 #progressPolyline {
-  stroke: var(--progress);
-  stroke-width: 3.1;
+  stroke: #202020;
+  stroke-width: 4;
 }
 
 .grid-point {
@@ -618,12 +668,7 @@ h2 {
   font-weight: 700;
 }
 
-.grid-point.start {
-  background: var(--active-point);
-  color: white;
-  border-color: var(--active-point);
-}
-
+.grid-point.start,
 .grid-point.end {
   background: var(--inactive-point);
   color: white;
@@ -632,22 +677,12 @@ h2 {
 }
 
 .grid-point.waypoint {
-  background: var(--canvas);
-  color: var(--ink);
-  border: 2px solid var(--ink);
-}
-
-body.selecting-end .grid-point.start {
   background: var(--inactive-point);
+  color: white;
   border-color: var(--inactive-point);
 }
 
-body.selecting-end .grid-point.end {
-  background: var(--active-point);
-  border-color: var(--active-point);
-}
-
-body.selecting-end .grid-point.waypoint {
+.grid-point.selected {
   background: var(--active-point);
   color: white;
   border-color: var(--active-point);
@@ -656,6 +691,8 @@ body.selecting-end .grid-point.waypoint {
 .car-marker {
   position: absolute;
   z-index: 4;
+  left: 50%;
+  top: 50%;
   width: 48px;
   height: 48px;
   transform: translate(-50%, -50%);
@@ -672,6 +709,18 @@ body.selecting-end .grid-point.waypoint {
 
 .car-marker.is-positioned {
   opacity: 1;
+}
+
+.car-marker.is-positioned::after {
+  content: "";
+  position: absolute;
+  bottom: -8px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid white;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 .car-marker svg {
@@ -758,7 +807,7 @@ body.selecting-end .legend-end {
 
 @media (max-width: 1240px) {
   #homeView {
-    grid-template-columns: 300px 320px minmax(500px, 1fr);
+    grid-template-columns: 340px 300px minmax(500px, 1fr);
   }
 
   .request-panel,
@@ -770,7 +819,7 @@ body.selecting-end .legend-end {
 
 @media (max-width: 1080px) {
   #homeView {
-    grid-template-columns: 300px minmax(320px, 1fr);
+    grid-template-columns: 320px minmax(320px, 1fr);
     height: auto;
     min-height: calc(100vh - 64px);
     overflow: visible;

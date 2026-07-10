@@ -132,7 +132,38 @@ function getRouteStops() {
 }
 
 function updateRouteTitle() {
-  routeTitle.textContent = getRouteStops().join(" → ");
+  renderRouteTitle(getRouteStops());
+}
+
+function renderRouteTitle(stops, progressPath = []) {
+  const currentPoint = progressPath.at(-1);
+  const passedPoints = new Set(progressPath.slice(0, -1));
+  let currentIndex = stops.indexOf(currentPoint);
+
+  if (currentIndex < 0) {
+    currentIndex = stops.findIndex((stop) => !passedPoints.has(stop));
+  }
+  if (currentIndex < 0) {
+    currentIndex = stops.length - 1;
+  }
+
+  routeTitle.replaceChildren();
+  stops.forEach((stop, index) => {
+    const station = document.createElement("span");
+    station.className = "route-stop";
+    station.textContent = stop;
+    station.classList.toggle("passed", passedPoints.has(stop));
+    station.classList.toggle("current", index === currentIndex);
+    routeTitle.append(station);
+
+    if (index < stops.length - 1) {
+      const separator = document.createElement("span");
+      separator.className = "route-separator";
+      separator.setAttribute("aria-hidden", "true");
+      separator.textContent = "→";
+      routeTitle.append(separator);
+    }
+  });
 }
 
 function setMessage(type, text) {
@@ -146,7 +177,8 @@ function addMessage(type, text) {
   const time = document.createElement("time");
   time.textContent = new Date().toLocaleTimeString();
   item.append(time, document.createTextNode(`${type}：${text}`));
-  messageList.prepend(item);
+  messageList.append(item);
+  messageList.scrollTop = messageList.scrollHeight;
 }
 
 function setCarPoint(point) {
@@ -322,15 +354,33 @@ function paintRoute(start, end, progressPath = []) {
   }
   const waypointStops = getWaypointValues().filter((point) => pointToCoord(point));
   const stops = [start, ...waypointStops, end];
+  const selectedPoint = getSelectedMapPoint(start, end);
   const routePath = buildMultiStopPath(stops);
   routePolyline.setAttribute("points", pathToSvgPoints(routePath));
-  progressPolyline.setAttribute("points", pathToSvgPoints(progressPath));
+  progressPolyline.setAttribute(
+    "points",
+    progressPath.length > 1 ? pathToSvgPoints(progressPath) : ""
+  );
 
   document.querySelectorAll(".grid-point").forEach((node) => {
     node.classList.toggle("start", node.dataset.point === start);
     node.classList.toggle("end", node.dataset.point === end);
     node.classList.toggle("waypoint", waypointStops.includes(node.dataset.point));
+    node.classList.toggle("selected", node.dataset.point === selectedPoint);
   });
+
+}
+
+function getSelectedMapPoint(start, end) {
+  if (activeTarget === "start") {
+    return start;
+  }
+  if (activeTarget === "end") {
+    return end;
+  }
+
+  const waypoint = waypoints.find((item) => item.id === activeTarget);
+  return waypoint && pointToCoord(waypoint.value) ? waypoint.value.trim().toUpperCase() : null;
 }
 
 function clearTimers() {
@@ -359,10 +409,9 @@ function startRide(start, end) {
   callButton.disabled = true;
   setCallButtonLabel("行程进行中");
   messageList.innerHTML = "";
-  routeTitle.textContent = routeLabel;
+  renderRouteTitle(routeStops, [carPoint]);
   etaText.textContent = "派单中";
   setCarBusy(true);
-  setMessage("乘客", `请求路线 ${routeLabel}`);
 
   schedule(1000, () => {
     setMessage("小车", `收到叫车请求，当前上报位置 ${carPoint}`);
@@ -372,12 +421,13 @@ function startRide(start, end) {
   const pickupPath = buildPath(carPoint, start);
   const tripPath = buildMultiStopPath(routeStops);
   const fullPath = [...pickupPath, ...tripPath.slice(1)];
-  const straightSegments = buildStraightSegments(fullPath);
+  const tripSegments = buildStraightSegments(tripPath);
 
   paintRoute(start, end, [carPoint]);
 
-  straightSegments.forEach((segment) => {
-    schedule(1800 + segment.startIndex * 850, () => {
+  tripSegments.forEach((segment) => {
+    const departureIndex = pickupPath.length + segment.startIndex;
+    schedule(1800 + departureIndex * 850, () => {
       etaText.textContent = `直线行驶 ${segment.from} → ${segment.to}`;
       setMessage("小车", `直线行驶 ${segment.from} → ${segment.to}`);
     });
@@ -385,8 +435,16 @@ function startRide(start, end) {
 
   fullPath.forEach((point, index) => {
     schedule(1800 + index * 850, () => {
+      const tripProgressPath =
+        index >= pickupPath.length - 1
+          ? fullPath.slice(pickupPath.length - 1, index + 1)
+          : [];
       setCarPoint(point);
-      progressPolyline.setAttribute("points", pathToSvgPoints(fullPath.slice(0, index + 1)));
+      progressPolyline.setAttribute(
+        "points",
+        tripProgressPath.length > 1 ? pathToSvgPoints(tripProgressPath) : ""
+      );
+      renderRouteTitle(routeStops, tripProgressPath);
       if (point === start) {
         etaText.textContent = "已到起点";
         setMessage("小车", `已到达起点 ${start}，请上车`);
@@ -400,6 +458,7 @@ function startRide(start, end) {
 
   schedule(1800 + fullPath.length * 850, () => {
     setCarPoint(end);
+    renderRouteTitle(routeStops, tripPath);
     etaText.textContent = "已到达";
     setCarBusy(false);
     setMessage("小车", `已到达终点 ${end}，即将发送到达邮件`);
