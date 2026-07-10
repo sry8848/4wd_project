@@ -115,13 +115,16 @@ svg {
 
 #homeView {
   grid-template-columns: 300px minmax(340px, 1fr) minmax(540px, 1.05fr);
-  min-height: calc(100vh - 64px);
+  height: calc(100dvh - 64px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .request-panel,
 .message-panel,
 .map-panel {
   padding: 32px;
+  min-height: 0;
 }
 
 .request-panel {
@@ -130,7 +133,10 @@ svg {
 }
 
 .message-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   border-right: 1px solid var(--line);
+  overflow: hidden;
 }
 
 h1,
@@ -471,7 +477,32 @@ h2 {
   margin: 22px 0 0;
   padding: 0;
   display: grid;
+  align-content: start;
   gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #8a8a8a #e8e8e8;
+}
+
+.message-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.message-list::-webkit-scrollbar-track {
+  background: #e8e8e8;
+  border-radius: 999px;
+}
+
+.message-list::-webkit-scrollbar-thumb {
+  background: #8a8a8a;
+  border-radius: 999px;
+}
+
+.message-list::-webkit-scrollbar-thumb:hover {
+  background: #5f5f5f;
 }
 
 .message-list li {
@@ -517,7 +548,8 @@ h2 {
 
 .grid-map {
   position: relative;
-  min-height: 560px;
+  min-height: 0;
+  height: 100%;
   width: 100%;
   border-radius: 16px;
   background: var(--canvas);
@@ -734,11 +766,22 @@ body.selecting-end .legend-end {
 @media (max-width: 1080px) {
   #homeView {
     grid-template-columns: 300px minmax(320px, 1fr);
+    height: auto;
+    min-height: calc(100vh - 64px);
+    overflow: visible;
   }
 
   .map-panel {
     grid-column: 1 / -1;
     border-top: 1px solid var(--line);
+  }
+
+  .message-panel {
+    min-height: 520px;
+  }
+
+  .grid-map {
+    min-height: 560px;
   }
 }
 
