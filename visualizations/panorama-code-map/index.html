@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>全景拍摄功能交互式代码地图</title>
+  </head>
+  <body>
+    <header class="page-header">
+      <div class="intro-copy">
+        <h1>全景拍摄功能交互式代码地图</h1>
+        <p>沿真实调用顺序理解全景拍摄涉及的目录、文件、方法和关键逻辑；页面只展示理解该功能需要的代码。</p>
+      </div>
+
+      <div class="canvas-controls" role="group" aria-label="画布缩放控件">
+        <button id="zoom-in" type="button">放大</button>
+        <button id="zoom-out" type="button">缩小</button>
+        <button id="reset-view" type="button">复位</button>
+      </div>
+
+      <ul class="legend" aria-label="图例">
+        <li><span class="legend-swatch legend-swatch--root"></span>顶层目录</li>
+        <li><span class="legend-swatch legend-swatch--directory"></span>子目录</li>
+        <li><span class="legend-swatch legend-swatch--file"></span>文件</li>
+        <li><span class="legend-swatch legend-swatch--method"></span>方法</li>
+        <li><span class="legend-line"></span>确定调用</li>
+        <li><span class="legend-line legend-line--conditional"></span>条件调用</li>
+        <li><span class="legend-line legend-line--error"></span>异常路径</li>
+      </ul>
+
+      <p class="usage-hint">点击方法展开详情，点击逻辑中的方法名可跳转，按 Esc 收起本次打开的目标并返回来源。所有已展开方法都会保留调用线；普通滚轮上下移动画布，Alt + 滚轮缩放。</p>
+    </header>
+
+    <aside id="error-panel" role="alert" aria-live="assertive" hidden></aside>
+    <main id="app" class="canvas-viewport" aria-label="Panorama 功能代码结构图"></main>
+
+    <noscript>此页面需要启用 JavaScript 才能显示交互式代码结构图。</noscript>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
