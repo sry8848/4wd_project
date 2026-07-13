@@ -449,7 +449,6 @@ h2 {
 }
 
 .message-current span,
-.mail-preview span,
 .section-heading p,
 .map-header p,
 .kicker {
@@ -561,6 +560,27 @@ h2 {
   margin-bottom: 4px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.obstacle-message-media {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.obstacle-message-media img {
+  width: 96px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+}
+
+.obstacle-message-media a {
+  color: var(--ink);
+  font-weight: 700;
+  text-underline-offset: 3px;
 }
 
 .map-panel {
@@ -773,36 +793,116 @@ body.selecting-end .legend-end {
   background: var(--car-color);
 }
 
-.mail-view {
+.obstacle-view {
   min-height: calc(100vh - 64px);
-  place-items: center;
+  align-items: start;
   padding: 32px;
+  background: #fafafa;
 }
 
-.mail-card {
-  width: min(720px, 100%);
+.obstacle-page {
+  width: min(1040px, 100%);
+  margin: 0 auto;
   border-radius: 16px;
   border: 1px solid var(--line);
   padding: 34px;
+  background: var(--canvas);
 }
 
-.mail-preview {
-  margin: 26px 0;
-  padding: 20px;
+.obstacle-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 26px;
+}
+
+.obstacle-page-head .muted {
+  margin-bottom: 0;
+}
+
+.obstacle-list {
+  display: grid;
+  gap: 18px;
+}
+
+.obstacle-empty {
+  margin: 0;
+  padding: 28px;
   border-radius: 16px;
+  background: var(--soft);
+  color: var(--muted);
+  text-align: center;
+}
+
+.obstacle-card {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) 1fr;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--canvas);
+}
+
+.obstacle-card > img {
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  object-fit: cover;
   background: var(--soft);
 }
 
-.mail-preview strong {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 20px;
+.obstacle-card-content {
+  padding: 24px;
 }
 
-.mail-preview p {
+.obstacle-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.obstacle-card-top h2 {
   margin-bottom: 0;
-  color: var(--body);
-  line-height: 1.5;
+}
+
+.obstacle-status {
+  flex: none;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #e1f0e5;
+  color: #22613a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.obstacle-status.recovery_failed {
+  background: #f8dfdc;
+  color: #8f2b24;
+}
+
+.obstacle-card dl {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.obstacle-card dt {
+  color: var(--muted);
+}
+
+.obstacle-card dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.obstacle-capture-error {
+  margin: 18px 0 0;
+  color: #8f2b24;
+  font-size: 13px;
 }
 
 @media (max-width: 1240px) {
@@ -867,5 +967,27 @@ body.selecting-end .legend-end {
 
   .grid-map {
     min-height: 420px;
+  }
+
+  .obstacle-view {
+    padding: 18px;
+  }
+
+  .obstacle-page {
+    padding: 22px;
+  }
+
+  .obstacle-page-head,
+  .obstacle-card-top {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .obstacle-card {
+    grid-template-columns: 1fr;
+  }
+
+  .obstacle-card > img {
+    min-height: 200px;
   }
 }

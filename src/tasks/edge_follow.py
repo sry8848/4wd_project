@@ -52,11 +52,13 @@ class EdgeExecutionResult:
     status: One of the EDGE_* status strings defined in this module.
     final_heading: Heading after the action finishes when it is known.
     reason: Optional low-level reason for a failure status.
+    obstacle_distance_cm: Confirmed ultrasonic distance for a blocked edge.
     """
 
     status: str
     final_heading: Optional[str] = None
     reason: Optional[str] = None
+    obstacle_distance_cm: Optional[float] = None
 
 
 class CachedObstacleSensor:
@@ -108,13 +110,13 @@ class ObstacleGate:
             self._log(f"obstacle_gate armed sequence={self.last_sequence}")
 
     def check_blocked(self):
-        """Return True after confirmed new readings report an obstacle."""
+        """Return the confirmed distance, or None when the edge is not blocked."""
         if self.sensor is None or self.last_sequence is None:
-            return False
+            return None
 
         sequence, distance, obstructed = self.sensor.read_snapshot()
         if sequence <= self.last_sequence:
-            return False
+            return None
         self.last_sequence = sequence
 
         if not obstructed:
@@ -126,7 +128,9 @@ class ObstacleGate:
             f"obstructed={int(obstructed)} "
             f"hit_count={self.hit_count}/{self.confirm_samples}"
         )
-        return self.hit_count >= self.confirm_samples
+        if self.hit_count >= self.confirm_samples:
+            return float(distance)
+        return None
 
     def _log(self, message):
         """Emit one obstacle decision log when debugging is enabled."""
@@ -678,12 +682,14 @@ class EdgeFollower:
                     )
                     last_summary = summary
 
-            if self.obstacle_gate.check_blocked():
+            obstacle_distance_cm = self.obstacle_gate.check_blocked()
+            if obstacle_distance_cm is not None:
                 self.motor.brake()
                 self._log("edge_travel blocked_by_obstacle")
                 return EdgeExecutionResult(
                     EDGE_BLOCKED_ON_PLANNED_EDGE,
                     final_heading=final_heading,
+                    obstacle_distance_cm=obstacle_distance_cm,
                 )
 
             lost_since = self._update_line_loss(result, lost_since)

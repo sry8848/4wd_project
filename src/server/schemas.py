@@ -162,7 +162,6 @@ class RideStatusResponse:
     route: 后端规划出的完整展示路径。
     progress: 已完成路径。
     eta_text: 前端展示用状态文字。
-    mail_status: 到达邮件状态。
     error_message: 失败原因，没有失败时为 None。
     created_at: 创建时间。
     updated_at: 更新时间。
@@ -177,7 +176,6 @@ class RideStatusResponse:
     route: List[str]
     progress: List[str]
     eta_text: str
-    mail_status: str
     error_message: Optional[str]
     created_at: str
     updated_at: str
@@ -197,15 +195,17 @@ class RideEventResponse:
 
     参数说明：
     seq: 递增消息序号。
-    type: 消息类型，例如 system、passenger、car、mail。
+    type: 消息类型，例如 system、passenger、car、mail、obstacle。
     text: 消息正文。
     created_at: 消息创建时间。
+    obstacle_id: 障碍消息关联的持久化记录 ID；其它消息为 None。
     """
 
     seq: int
     type: str
     text: str
     created_at: str
+    obstacle_id: Optional[str] = None
 
     def to_dict(self):
         """转换为可 JSON 序列化的字典。
@@ -217,29 +217,35 @@ class RideEventResponse:
 
 
 @dataclass(frozen=True)
-class LatestMailResponse:
-    """最近一次邮件状态响应。
+class ObstacleRecordResponse:
+    """一次已确认障碍的持久化展示记录。
 
     参数说明：
-    status: 邮件状态，例如 none、pending、sent、failed。
-    subject: 邮件主题。
-    body: 邮件正文摘要。
-    sent_at: 发送时间，未发送时为 None。
-    error_message: 发送失败原因，没有失败时为 None。
+    id: 障碍记录 ID，同时用于读取对应图片。
+    ride_id: 发现障碍的行程 ID。
+    created_at: 完成恢复并保存记录的时间。
+    from_point/to_point: 被阻塞的有向网格边。
+    distance_cm: 连续确认障碍时最后一次有效距离。
+    recovered_point: 成功恢复后的可信节点；恢复失败时为 None。
+    status: recovered 或 recovery_failed。
+    image_url: 真实图片接口地址；没有真实图片时为 None。
+    capture_error: 抓拍失败原因；成功时为 None。
     """
 
+    id: str
+    ride_id: str
+    created_at: str
+    from_point: str
+    to_point: str
+    distance_cm: float
+    recovered_point: Optional[str]
     status: str
-    subject: str
-    body: str
-    sent_at: Optional[str]
-    error_message: Optional[str]
+    image_url: Optional[str]
+    capture_error: Optional[str]
 
     def to_dict(self):
-        """转换为可 JSON 序列化的字典。
+        """转换为可 JSON 序列化的字典。"""
 
-        参数说明：
-        无。返回值用于 HTTP 响应或测试断言。
-        """
         return asdict(self)
 
 

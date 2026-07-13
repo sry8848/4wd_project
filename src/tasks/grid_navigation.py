@@ -83,6 +83,7 @@ class GridNavigator:
         cancel_requested_fn=None,
         node_reached_fn=None,
         stop_at_next_node_fn=None,
+        obstacle_result_fn=None,
     ):
         """Navigate from start to end using trusted-node state transitions.
 
@@ -94,6 +95,8 @@ class GridNavigator:
         node_reached_fn: Optional callback(node, heading) after reaching a trusted node.
         stop_at_next_node_fn: Optional callback for a graceful stop. When requested
             during an edge, finish that edge and stop at the confirmed next node.
+        obstacle_result_fn: Optional callback receiving the blocked edge, confirmed
+            distance, recovery result, and final heading after recovery finishes.
 
         Steps:
         Check cancellation before each planning/execution phase, pass the same signal
@@ -196,6 +199,14 @@ class GridNavigator:
                     return self._finish_canceled()
                 if recovery_status != EDGE_RECOVERED_TO_START_NODE:
                     self.motor.brake()
+                    if obstacle_result_fn is not None:
+                        obstacle_result_fn(
+                            self.current_node,
+                            next_node,
+                            edge_result.obstacle_distance_cm,
+                            recovery_status,
+                            _result_final_heading(recovery_result),
+                        )
                     return NAV_FAILED
 
                 self.current_heading = _result_final_heading(
@@ -206,6 +217,14 @@ class GridNavigator:
                     f"nav recovered at={_fmt_node(self.current_node)} "
                     f"heading={self.current_heading}"
                 )
+                if obstacle_result_fn is not None:
+                    obstacle_result_fn(
+                        self.current_node,
+                        next_node,
+                        edge_result.obstacle_distance_cm,
+                        recovery_status,
+                        self.current_heading,
+                    )
                 if self._stop_at_node_requested(stop_at_next_node_fn):
                     return NAV_CANCELED
                 continue

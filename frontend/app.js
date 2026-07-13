@@ -3,7 +3,7 @@ let cols = [];
 let points = [];
 
 const homeView = document.querySelector("#homeView");
-const mailView = document.querySelector("#mailView");
+const obstacleView = document.querySelector("#obstacleView");
 const navLinks = document.querySelectorAll("[data-view-link]");
 const rideForm = document.querySelector("#rideForm");
 const startInput = document.querySelector("#startInput");
@@ -27,9 +27,8 @@ const gridPointsLayer = document.querySelector("#gridPointsLayer");
 const carMarker = document.querySelector("#carMarker");
 const routePolyline = document.querySelector("#routePolyline");
 const progressPolyline = document.querySelector("#progressPolyline");
-const refreshMailButton = document.querySelector("#refreshMailButton");
-const mailSubject = document.querySelector("#mailSubject");
-const mailBody = document.querySelector("#mailBody");
+const refreshObstaclesButton = document.querySelector("#refreshObstaclesButton");
+const obstacleList = document.querySelector("#obstacleList");
 
 let running = false;
 let carPoint = "C3";
@@ -39,6 +38,7 @@ let waypoints = [];
 let activeRideId = null;
 let lastEventSeq = 0;
 let pollTimer = null;
+let obstacleRecords = new Map();
 
 const terminalRideStatuses = new Set(["arrived", "failed", "canceled"]);
 const eventTypeLabels = {
@@ -46,7 +46,9 @@ const eventTypeLabels = {
   passenger: "乘客",
   car: "小车",
   mail: "邮件",
+  obstacle: "障碍",
 };
+const cameraErrorImage = "/assets/camera-error.svg";
 
 function pointToCoord(point) {
   const normalized = point.trim().toUpperCase();
@@ -178,13 +180,34 @@ function setMessage(type, text) {
   addMessage(type, text);
 }
 
-function addMessage(type, text, createdAt = null) {
+function addMessage(type, text, createdAt = null, obstacle = null) {
   const item = document.createElement("li");
   const time = document.createElement("time");
   time.textContent = new Date(createdAt || Date.now()).toLocaleTimeString();
   item.append(time, document.createTextNode(`${type}：${text}`));
+  if (obstacle !== null) {
+    item.classList.add("obstacle-message");
+    const media = document.createElement("div");
+    media.className = "obstacle-message-media";
+    const image = document.createElement("img");
+    image.src = obstacle.image_url || cameraErrorImage;
+    image.alt = obstacle.image_url
+      ? `障碍边 ${obstacle.from_point} 到 ${obstacle.to_point} 的现场照片`
+      : "摄像头拍照失败默认图";
+    const link = document.createElement("a");
+    link.href = "#obstacles";
+    link.textContent = "查看障碍记录";
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      switchView("obstacles");
+      loadObstacles().catch((error) => setMessage("系统", error.message));
+    });
+    media.append(image, link);
+    item.append(media);
+  }
   messageList.append(item);
   messageList.scrollTop = messageList.scrollHeight;
+  return item;
 }
 
 function setCarPoint(point) {
@@ -512,13 +535,22 @@ function renderRide(ride) {
  * @param {object} eventPage 事件列表和下一游标。
  * 分步逻辑：跳过旧序号，追加新事件，最后推进游标。
  */
-function appendRideEvents(eventPage) {
+async function appendRideEvents(eventPage) {
+  const hasNewObstacle = eventPage.events.some(
+    (event) => event.seq > lastEventSeq && event.obstacle_id
+  );
+  if (hasNewObstacle) {
+    await loadObstacles();
+  }
   eventPage.events.forEach((event) => {
     if (event.seq <= lastEventSeq) {
       return;
     }
-    const type = eventTypeLabels[event.type];
-    addMessage(type, event.text, event.created_at);
+    const type = eventTypeLabels[event.type] || "系统";
+    const obstacle = event.obstacle_id
+      ? obstacleRecords.get(event.obstacle_id) || null
+      : null;
+    addMessage(type, event.text, event.created_at, obstacle);
     showCurrentMessage(type, event.text);
     lastEventSeq = event.seq;
   });
@@ -526,24 +558,74 @@ function appendRideEvents(eventPage) {
 }
 
 /**
- * 渲染后端最近邮件记录。
- * @param {object} mail 最近邮件状态。
- * 分步逻辑：更新主题，并明确展示邮件未启用状态。
+ * 渲染后端持久化障碍记录。
+ * @param {object[]} records 按时间倒序的障碍记录。
+ * 分步逻辑：空列表显示说明；否则复用统一记录卡片展示照片和字段。
  */
-function renderMail(mail) {
-  mailSubject.textContent = mail.subject;
-  mailBody.textContent =
-    mail.status === "disabled" ? `${mail.body}（当前未启用真实邮件发送）` : mail.body;
+function renderObstacles(records) {
+  obstacleList.replaceChildren();
+  if (records.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "obstacle-empty";
+    empty.textContent = "暂无障碍记录。小车确认障碍并完成恢复后会显示在这里。";
+    obstacleList.append(empty);
+    return;
+  }
+
+  records.forEach((record) => {
+    const card = document.createElement("article");
+    card.className = "obstacle-card";
+    const image = document.createElement("img");
+    image.src = record.image_url || cameraErrorImage;
+    image.alt = record.image_url
+      ? `障碍边 ${record.from_point} 到 ${record.to_point} 的现场照片`
+      : "摄像头拍照失败默认图";
+
+    const content = document.createElement("div");
+    content.className = "obstacle-card-content";
+    const top = document.createElement("div");
+    top.className = "obstacle-card-top";
+    const title = document.createElement("h2");
+    title.textContent = `${record.from_point} → ${record.to_point}`;
+    const badge = document.createElement("span");
+    badge.className = `obstacle-status ${record.status}`;
+    badge.textContent = record.status === "recovered" ? "已恢复并绕行" : "恢复失败";
+    top.append(title, badge);
+
+    const details = document.createElement("dl");
+    [
+      ["确认距离", `${record.distance_cm.toFixed(1)} cm`],
+      ["恢复点位", record.recovered_point || "未恢复到可信节点"],
+      ["记录时间", new Date(record.created_at).toLocaleString()],
+    ].forEach(([label, value]) => {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const description = document.createElement("dd");
+      description.textContent = value;
+      details.append(term, description);
+    });
+    content.append(top, details);
+    if (record.capture_error) {
+      const error = document.createElement("p");
+      error.className = "obstacle-capture-error";
+      error.textContent = `照片状态：${record.capture_error}`;
+      content.append(error);
+    }
+    card.append(image, content);
+    obstacleList.append(card);
+  });
 }
 
 /**
- * 从后端刷新最近邮件记录。
+ * 从后端刷新全部持久化障碍记录。
  * 参数说明：无。
- * 分步逻辑：读取邮件接口，再交给邮件渲染函数。
+ * 分步逻辑：读取障碍接口，更新 ID 索引和障碍记录页。
  */
-async function loadLatestMail() {
-  const mail = await requestJson("/api/mail/latest");
-  renderMail(mail);
+async function loadObstacles() {
+  const records = await requestJson("/api/obstacles");
+  obstacleRecords = new Map(records.map((record) => [record.id, record]));
+  renderObstacles(records);
+  return records;
 }
 
 /**
@@ -568,15 +650,8 @@ async function pollRide() {
     }
 
     const isTerminal = renderRide(ride);
-    appendRideEvents(eventPage);
+    await appendRideEvents(eventPage);
     if (isTerminal) {
-      if (ride.status === "arrived") {
-        try {
-          await loadLatestMail();
-        } catch (error) {
-          showCurrentMessage("系统", `邮件状态刷新失败：${error.message}`);
-        }
-      }
       activeRideId = null;
       return;
     }
@@ -635,9 +710,9 @@ function resetRide(options = {}) {
 }
 
 function switchView(viewName) {
-  const isMail = viewName === "mail";
-  homeView.classList.toggle("active", !isMail);
-  mailView.classList.toggle("active", isMail);
+  const isObstacles = viewName === "obstacles";
+  homeView.classList.toggle("active", !isObstacles);
+  obstacleView.classList.toggle("active", isObstacles);
   navLinks.forEach((link) => {
     link.classList.toggle("active", link.dataset.viewLink === viewName);
   });
@@ -692,7 +767,7 @@ function initGrid() {
 }
 
 /**
- * 从后端初始化网格、小车、活动行程和邮件状态。
+ * 从后端初始化网格、小车、活动行程和障碍记录。
  * 参数说明：无。
  * 分步逻辑：先加载网格，再并行读取状态；失败时锁定叫车入口。
  */
@@ -708,13 +783,16 @@ async function initializeApp() {
     points = grid.points;
     initGrid();
 
-    const [carStatus, activeRide, mail] = await Promise.all([
+    const [carStatus, activeRide, obstacles] = await Promise.all([
       requestJson("/api/car/status"),
       requestJson("/api/rides/active"),
-      requestJson("/api/mail/latest"),
+      requestJson("/api/obstacles"),
     ]);
     setCarPoint(carStatus.current_position);
-    renderMail(mail);
+    obstacleRecords = new Map(
+      obstacles.map((record) => [record.id, record])
+    );
+    renderObstacles(obstacles);
 
     if (activeRide !== null) {
       startTrackingRide(activeRide);
@@ -824,14 +902,14 @@ navLinks.forEach((link) => {
     event.preventDefault();
     const viewName = link.dataset.viewLink;
     switchView(viewName);
-    if (viewName === "mail") {
-      loadLatestMail().catch((error) => setMessage("系统", error.message));
+    if (viewName === "obstacles") {
+      loadObstacles().catch((error) => setMessage("系统", error.message));
     }
   });
 });
 
-refreshMailButton.addEventListener("click", () => {
-  loadLatestMail().catch((error) => setMessage("系统", error.message));
+refreshObstaclesButton.addEventListener("click", () => {
+  loadObstacles().catch((error) => setMessage("系统", error.message));
 });
 
 initializeApp();

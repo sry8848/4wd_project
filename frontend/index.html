@@ -13,9 +13,10 @@
         <path d="M5.5 10.5V20h13v-9.5" />
         <path d="M9.5 20v-6h5v6" />
       </symbol>
-      <symbol id="icon-mail" viewBox="0 0 24 24">
-        <path d="M4 6h16v12H4z" />
-        <path d="m4 7 8 6 8-6" />
+      <symbol id="icon-obstacle" viewBox="0 0 24 24">
+        <path d="M12 3 2.8 20h18.4L12 3Z" />
+        <path d="M12 9v5" />
+        <path d="M12 17.5h.1" />
       </symbol>
       <symbol id="icon-car" viewBox="0 0 24 24">
         <path d="M5 15h14l-1.6-5.2A2.5 2.5 0 0 0 15 8H9a2.5 2.5 0 0 0-2.4 1.8L5 15Z" />
@@ -40,9 +41,9 @@
           <svg><use href="#icon-home"></use></svg>
           首页
         </a>
-        <a class="nav-tab" href="#mail" data-view-link="mail">
-          <svg><use href="#icon-mail"></use></svg>
-          查看邮箱
+        <a class="nav-tab" href="#obstacles" data-view-link="obstacles">
+          <svg><use href="#icon-obstacle"></use></svg>
+          障碍记录
         </a>
       </nav>
     </header>
@@ -139,17 +140,17 @@
         </section>
       </section>
 
-      <section id="mailView" class="page-view mail-view" aria-label="查看邮箱">
-        <div class="mail-card">
-          <p class="kicker">Mail status</p>
-          <h1>查看邮箱</h1>
-          <p class="muted">展示后端记录的最近一次到达邮件状态；真实邮件将在树莓派完成邮箱配置后启用。</p>
-          <div class="mail-preview">
-            <span>最近邮件</span>
-            <strong id="mailSubject">暂无真实邮件</strong>
-            <p id="mailBody">完成行程后，后端会记录最近一次到达邮件状态。</p>
+      <section id="obstacleView" class="page-view obstacle-view" aria-label="障碍记录">
+        <div class="obstacle-page">
+          <div class="obstacle-page-head">
+            <div>
+              <p class="kicker">Obstacle records</p>
+              <h1>障碍记录</h1>
+              <p class="muted">展示小车确认并完成恢复后的障碍边、距离、状态和现场照片。</p>
+            </div>
+            <button class="secondary-button" id="refreshObstaclesButton" type="button">刷新记录</button>
           </div>
-          <button class="primary-button" id="refreshMailButton" type="button">刷新邮件状态</button>
+          <div id="obstacleList" class="obstacle-list" aria-live="polite"></div>
         </div>
       </section>
     </main>

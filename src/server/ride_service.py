@@ -6,8 +6,9 @@ orchestrates an injected GridNavigator and records trusted-node progress.
 
 from __future__ import annotations
 
+import logging
 from threading import RLock
-from typing import Callable, List, Optional
+from typing import List
 
 from src.server.point_codec import coord_to_point, point_to_coord
 from src.server.runtime_state import (
@@ -31,26 +32,24 @@ RIDE_STATUS_TO_PICKUP = "to_pickup"
 RIDE_STATUS_ARRIVED_PICKUP = "arrived_pickup"
 RIDE_STATUS_IN_TRIP = "in_trip"
 
-MAIL_STATUS_DISABLED = "disabled"
-MAIL_STATUS_SENT = "sent"
-MAIL_STATUS_FAILED = "failed"
+LOGGER = logging.getLogger(__name__)
 
 
 class RideService:
     """编排叫车行程状态以及注入的真实导航器。
 
     参数说明：
-    state: RuntimeState 实例，保存小车状态、行程、消息和邮件状态。
-    send_mail_fn: 可选邮件发送函数，签名为 (subject, body)。
+    state: RuntimeState 实例，保存小车状态、行程和消息。
+    mail_notifier: AsyncMailNotifier 或遵守相同 notify() 契约的测试对象。
     """
 
     def __init__(
         self,
         state: RuntimeState,
-        send_mail_fn: Optional[Callable[[str, str], None]] = None,
+        mail_notifier,
     ):
         self.state = state
-        self.send_mail_fn = send_mail_fn
+        self.mail_notifier = mail_notifier
         self._state_lock = RLock()
         self._cancel_reasons = {}
 
@@ -84,12 +83,13 @@ class RideService:
         )
         return self.state.get_ride(ride.id)
 
-    def run_hardware_ride(self, ride_id: str, navigator):
+    def run_hardware_ride(self, ride_id: str, navigator, obstacle_recorder):
         """使用已创建的 GridNavigator 执行真实分段行程。
 
         参数说明：
         ride_id: submit_ride() 返回的活动行程 ID。
         navigator: hardware_factory 创建的 GridNavigator；本方法不拥有或关闭它。
+        obstacle_recorder: 后端长期摄像头与 ObstacleStore 的业务组合对象。
 
         分步逻辑：
         1. 按当前位置、起点、途径点、终点逐段调用真实导航。
@@ -152,6 +152,60 @@ class RideService:
                         )
                         self.state.append_ride_event(ride_id, "car", message)
 
+                def report_obstacle(
+                    from_node,
+                    to_node,
+                    distance_cm,
+                    recovery_status,
+                    _final_heading,
+                ):
+                    """在节点恢复和居中完成后保存并发布障碍记录。"""
+
+                    from_point = coord_to_point(from_node)
+                    to_point = coord_to_point(to_node)
+                    try:
+                        record = obstacle_recorder.record(
+                            ride_id=ride_id,
+                            from_point=from_point,
+                            to_point=to_point,
+                            distance_cm=distance_cm,
+                            recovery_status=recovery_status,
+                        )
+                    except Exception as exc:
+                        LOGGER.exception(
+                            "Failed to persist obstacle for ride=%s edge=%s-%s",
+                            ride_id,
+                            from_point,
+                            to_point,
+                        )
+                        with self._state_lock:
+                            if self._is_active_ride(ride_id):
+                                self.state.append_ride_event(
+                                    ride_id,
+                                    "system",
+                                    f"检测到障碍 {from_point}—{to_point}，但记录保存失败：{exc}",
+                                )
+                        return
+
+                    status_text = (
+                        "已恢复并绕行"
+                        if record.status == "recovered"
+                        else "恢复失败"
+                    )
+                    message = (
+                        f"检测到障碍 {from_point}—{to_point}，"
+                        f"确认距离 {record.distance_cm:.1f} cm，"
+                        f"{status_text}"
+                    )
+                    with self._state_lock:
+                        if self._is_active_ride(ride_id):
+                            self.state.append_ride_event(
+                                ride_id,
+                                "obstacle",
+                                message,
+                                obstacle_id=record.id,
+                            )
+
                 result = navigator.navigate(
                     point_to_coord(car_status.current_position),
                     point_to_coord(stop),
@@ -159,6 +213,7 @@ class RideService:
                     cancel_requested_fn=lambda: not self._is_active_ride(ride_id),
                     node_reached_fn=report_node,
                     stop_at_next_node_fn=lambda: self._is_cancel_requested(ride_id),
+                    obstacle_result_fn=report_obstacle,
                 )
                 with self._state_lock:
                     if self._is_cancel_requested(ride_id):
@@ -183,6 +238,12 @@ class RideService:
                         return self._finish_arrived(
                             ride_id,
                             ride.end,
+                            list(current_ride.progress),
+                        )
+                    else:
+                        self._mark_waypoint_arrived(
+                            ride_id,
+                            stop,
                             list(current_ride.progress),
                         )
 
@@ -283,7 +344,11 @@ class RideService:
                 if is_canceling
                 else pickup_message
             )
-            self.state.append_ride_event(ride_id, "car", pickup_message)
+            event = self.state.append_ride_event(
+                ride_id,
+                "car",
+                pickup_message,
+            )
             self.state.update_ride(
                 ride_id,
                 status=status,
@@ -291,10 +356,40 @@ class RideService:
                 progress=progress,
                 eta_text=message,
             )
+            self._queue_point_mail(
+                ride_id,
+                "起点",
+                pickup,
+                event.created_at,
+            )
+
+    def _mark_waypoint_arrived(
+        self,
+        ride_id: str,
+        waypoint: str,
+        progress: List[str],
+    ):
+        """记录途径点到达并提交对应 QQ 邮件。"""
+
+        message = f"已到达途径点 {waypoint}，继续前往下一站"
+        event = self.state.append_ride_event(ride_id, "car", message)
+        self.state.update_ride(
+            ride_id,
+            status=RIDE_STATUS_IN_TRIP,
+            current_position=waypoint,
+            progress=progress,
+            eta_text=message,
+        )
+        self._queue_point_mail(
+            ride_id,
+            "途径点",
+            waypoint,
+            event.created_at,
+        )
 
     def _finish_arrived(self, ride_id: str, destination: str, progress: List[str]):
         self._cancel_reasons.pop(ride_id, None)
-        message = f"已到达终点 {destination}，即将发送到达邮件"
+        message = f"已到达终点 {destination}，行程完成"
         self.state.finish_ride(
             ride_id,
             status=RIDE_STATUS_ARRIVED,
@@ -305,52 +400,63 @@ class RideService:
             ride_id,
             progress=progress,
         )
-        self.state.append_ride_event(ride_id, "car", message)
-        self._record_arrival_mail(ride_id)
+        event = self.state.append_ride_event(ride_id, "car", message)
+        self._queue_point_mail(
+            ride_id,
+            "终点",
+            destination,
+            event.created_at,
+        )
         return self.state.get_ride(ride_id)
 
-    def _record_arrival_mail(self, ride_id: str):
+    def _queue_point_mail(
+        self,
+        ride_id: str,
+        point_kind: str,
+        point: str,
+        arrived_at: str,
+    ):
+        """提交到点邮件，发送结果只写消息，不改变行程状态。"""
+
         ride = self.state.get_ride(ride_id)
         route_label = " → ".join([ride.start, *ride.waypoints, ride.end])
-        subject = f"4WD 小车到达通知：{ride.end}"
-        body = f"小车已完成路线 {route_label}，当前位置 {ride.end}。"
-
-        if self.send_mail_fn is None:
-            self.state.record_latest_mail(
-                status=MAIL_STATUS_DISABLED,
-                subject=subject,
-                body=body,
-                error_message=None,
+        subject = f"4WD 小车到达{point_kind}：{point}"
+        body = "\n".join(
+            (
+                f"通知类型：到达{point_kind}",
+                f"到达点位：{point}",
+                f"完整路线：{route_label}",
+                f"到达时间：{arrived_at}",
             )
-            self.state.update_ride(ride_id, mail_status=MAIL_STATUS_DISABLED)
-            self.state.append_ride_event(ride_id, "mail", "邮件发送未启用")
-            return
+        )
+
+        def record_result(error):
+            with self._state_lock:
+                try:
+                    self.state.get_ride(ride_id)
+                except RuntimeStateError:
+                    LOGGER.exception(
+                        "Mail result references missing ride=%s",
+                        ride_id,
+                    )
+                    return
+                if error is None:
+                    self.state.append_ride_event(
+                        ride_id,
+                        "mail",
+                        f"QQ 邮件已发送：到达{point_kind} {point}",
+                    )
+                else:
+                    self.state.append_ride_event(
+                        ride_id,
+                        "system",
+                        f"QQ 邮件发送失败（到达{point_kind} {point}）：{error}",
+                    )
 
         try:
-            self.send_mail_fn(subject, body)
+            self.mail_notifier.notify(subject, body, record_result)
         except Exception as exc:
-            self.state.record_latest_mail(
-                status=MAIL_STATUS_FAILED,
-                subject=subject,
-                body=body,
-                error_message=str(exc),
-            )
-            self.state.update_ride(ride_id, mail_status=MAIL_STATUS_FAILED)
-            self.state.append_ride_event(
-                ride_id,
-                "mail",
-                f"到达邮件发送失败：{exc}",
-            )
-            return
-
-        self.state.record_latest_mail(
-            status=MAIL_STATUS_SENT,
-            subject=subject,
-            body=body,
-            error_message=None,
-        )
-        self.state.update_ride(ride_id, mail_status=MAIL_STATUS_SENT)
-        self.state.append_ride_event(ride_id, "mail", "到达邮件已发送")
+            record_result(exc)
 
     def _mark_failed(self, ride_id: str, exc: Exception):
         self._cancel_reasons.pop(ride_id, None)

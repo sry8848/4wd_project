@@ -9,7 +9,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 from src.server.point_codec import normalize_point
 from src.server.schemas import (
     CarStatusResponse,
-    LatestMailResponse,
     RideCreateRequest,
     RideEventResponse,
     RideStatusResponse,
@@ -55,7 +54,7 @@ class RuntimeStateError(RuntimeError):
 
 
 class RuntimeState:
-    """保存后端进程内的小车状态、活动行程、消息和邮件状态。
+    """保存后端进程内的小车状态、活动行程和消息。
 
     参数说明：
     initial_position: 服务启动时的小车可信点位。
@@ -79,13 +78,6 @@ class RuntimeState:
         self._ride_counter = 0
         self._rides: Dict[str, RideStatusResponse] = {}
         self._ride_events: Dict[str, List[RideEventResponse]] = {}
-        self._latest_mail = LatestMailResponse(
-            status="none",
-            subject="暂无真实邮件",
-            body="完成行程后，后端会记录最近一次到达邮件状态。",
-            sent_at=None,
-            error_message=None,
-        )
 
     def get_car_status(self):
         """返回当前小车状态。
@@ -149,7 +141,6 @@ class RuntimeState:
             route=[],
             progress=[self._current_position],
             eta_text="派单中",
-            mail_status="pending",
             error_message=None,
             created_at=created_at,
             updated_at=created_at,
@@ -188,13 +179,14 @@ class RuntimeState:
                 f"行程不存在: {ride_id}",
             ) from exc
 
-    def append_ride_event(self, ride_id, event_type, text):
+    def append_ride_event(self, ride_id, event_type, text, obstacle_id=None):
         """追加一条行程消息事件。
 
         参数说明：
         ride_id: 行程 ID。
         event_type: system/passenger/car/mail 等消息类型。
         text: 消息正文。
+        obstacle_id: obstacle 消息关联的记录 ID，其它消息不传。
         """
         self.get_ride(ride_id)
         events = self._ride_events[ride_id]
@@ -204,6 +196,7 @@ class RuntimeState:
             type=event_type,
             text=text,
             created_at=created_at,
+            obstacle_id=obstacle_id,
         )
         events.append(event)
         self._touch(text, updated_at=created_at)
@@ -231,7 +224,6 @@ class RuntimeState:
         route=None,
         progress=None,
         eta_text=None,
-        mail_status=None,
         error_message=None,
     ):
         """更新非终止行程状态。
@@ -244,7 +236,6 @@ class RuntimeState:
         route: 新完整路径，不传则保持原值。
         progress: 新进度路径，不传则保持原值。
         eta_text: 前端展示文字，不传则保持原值。
-        mail_status: 邮件状态，不传则保持原值。
         error_message: 错误说明，不传则保持原值。
         """
         ride = self.get_ride(ride_id)
@@ -264,7 +255,6 @@ class RuntimeState:
             route=list(route) if route is not None else ride.route,
             progress=list(progress) if progress is not None else ride.progress,
             eta_text=eta_text if eta_text is not None else ride.eta_text,
-            mail_status=mail_status if mail_status is not None else ride.mail_status,
             error_message=error_message,
             updated_at=updated_at,
         )
@@ -304,32 +294,6 @@ class RuntimeState:
             self._active_ride_id = None
         self._mode = CAR_MODE_ERROR if status == RIDE_STATUS_FAILED else CAR_MODE_IDLE
         return ride
-
-    def get_latest_mail(self):
-        """返回最近一次邮件状态。
-
-        参数说明：
-        无。返回值用于 `/api/mail/latest`。
-        """
-        return self._latest_mail
-
-    def record_latest_mail(self, *, status, subject, body, error_message=None):
-        """记录最近一次邮件状态。
-
-        参数说明：
-        status: none/pending/sent/failed 等邮件状态。
-        subject: 邮件主题。
-        body: 邮件正文摘要。
-        error_message: 失败原因，没有失败时为 None。
-        """
-        self._latest_mail = LatestMailResponse(
-            status=status,
-            subject=subject,
-            body=body,
-            sent_at=self._now() if status == "sent" else None,
-            error_message=error_message,
-        )
-        return self._latest_mail
 
     def _touch(self, message, updated_at=None):
         self._last_message = message

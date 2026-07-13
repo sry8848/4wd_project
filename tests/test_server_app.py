@@ -16,6 +16,8 @@ from src.server.runtime_state import RuntimeStateError
 class ServerAppNavigationModeTest(unittest.TestCase):
     def tearDown(self):
         server_app.app.state.navigation_hardware = None
+        server_app.app.state.backend_camera = None
+        server_app.app.state.obstacle_recorder = None
 
     def test_configuration_requires_explicit_real_car_pose(self):
         with self.assertRaises(RuntimeError):
@@ -38,6 +40,8 @@ class ServerAppNavigationModeTest(unittest.TestCase):
     def test_hardware_lifespan_creates_once_then_cancels_and_closes(self):
         hardware = Mock()
         hardware.navigator = object()
+        camera = Mock()
+        camera.available = True
         active_ride = SimpleNamespace(id="ride-1")
 
         async def run_lifespan():
@@ -46,6 +50,10 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                 "create_grid_navigation_hardware",
                 return_value=hardware,
             ) as factory, patch.object(
+                server_app,
+                "BackendCamera",
+                return_value=camera,
+            ) as camera_class, patch.object(
                 server_app.runtime_state,
                 "get_active_ride",
                 return_value=active_ride,
@@ -58,6 +66,10 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                         server_app.app.state.navigation_hardware,
                         hardware,
                     )
+                    self.assertIs(server_app.app.state.backend_camera, camera)
+                    self.assertIsNotNone(
+                        server_app.app.state.obstacle_recorder
+                    )
                     factory.assert_called_once()
                     grid = factory.call_args.args[0]
                     self.assertEqual((len(grid), len(grid[0])), (5, 5))
@@ -65,16 +77,58 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                 force_cancel_ride.assert_called_once_with(
                     "ride-1", "server_shutdown"
                 )
+                camera_class.assert_called_once_with(device=0)
 
         asyncio.run(run_lifespan())
 
         hardware.close.assert_called_once_with()
+        camera.start.assert_called_once_with()
+        camera.close.assert_called_once_with()
         self.assertIsNone(server_app.app.state.navigation_hardware)
+        self.assertIsNone(server_app.app.state.backend_camera)
+        self.assertIsNone(server_app.app.state.obstacle_recorder)
+
+    def test_camera_start_failure_does_not_block_navigation_backend(self):
+        hardware = Mock()
+        camera = Mock()
+        camera.start.return_value = False
+        camera.available = False
+        camera.error = "cannot open"
+
+        async def run_lifespan():
+            with patch.object(
+                server_app,
+                "create_grid_navigation_hardware",
+                return_value=hardware,
+            ), patch.object(
+                server_app,
+                "BackendCamera",
+                return_value=camera,
+            ), patch.object(
+                server_app.runtime_state,
+                "get_active_ride",
+                return_value=None,
+            ):
+                async with server_app.lifespan(server_app.app):
+                    self.assertIs(
+                        server_app.app.state.navigation_hardware,
+                        hardware,
+                    )
+                    self.assertFalse(
+                        server_app.app.state.backend_camera.available
+                    )
+
+        asyncio.run(run_lifespan())
+
+        hardware.close.assert_called_once_with()
+        camera.close.assert_called_once_with()
 
     def test_submit_ride_uses_hardware_navigator(self):
         ride = SimpleNamespace(id="ride-hardware")
         hardware = SimpleNamespace(navigator=object(), motor=Mock())
+        obstacle_recorder = object()
         server_app.app.state.navigation_hardware = hardware
+        server_app.app.state.obstacle_recorder = obstacle_recorder
         tasks = BackgroundTasks()
         with patch.object(
             server_app.ride_service,
@@ -91,7 +145,10 @@ class ServerAppNavigationModeTest(unittest.TestCase):
 
         self.assertIs(result, ride)
         self.assertIs(tasks.tasks[0].func, run_hardware)
-        self.assertEqual(tasks.tasks[0].args, (ride.id, hardware.navigator))
+        self.assertEqual(
+            tasks.tasks[0].args,
+            (ride.id, hardware.navigator, obstacle_recorder),
+        )
 
     def test_hardware_submit_fails_before_creating_ride_when_not_ready(self):
         tasks = BackgroundTasks()
@@ -107,6 +164,31 @@ class ServerAppNavigationModeTest(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "hardware_not_ready")
         submit.assert_not_called()
+
+    def test_health_reports_camera_state_without_marking_backend_offline(self):
+        server_app.app.state.navigation_hardware = object()
+        server_app.app.state.backend_camera = SimpleNamespace(
+            available=False,
+            error="cannot open camera",
+        )
+
+        health = server_app.get_health()
+
+        self.assertTrue(health["ok"])
+        self.assertTrue(health["hardware_ready"])
+        self.assertFalse(health["camera_ready"])
+        self.assertEqual(health["camera_error"], "cannot open camera")
+
+    def test_obstacle_list_uses_persistent_store(self):
+        records = [SimpleNamespace(id="obstacle-1")]
+        with patch.object(
+            server_app.obstacle_store,
+            "list_records",
+            return_value=records,
+        ):
+            response = server_app.list_obstacles()
+
+        self.assertIs(response, records)
 
     def test_cancel_requests_next_node_stop_without_immediate_brake(self):
         canceling = SimpleNamespace(

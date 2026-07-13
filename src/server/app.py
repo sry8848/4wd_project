@@ -7,15 +7,27 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Body, FastAPI, Query, Request, Response, status
+from fastapi import (
+    BackgroundTasks,
+    Body,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.algorithms.astar import PASSABLE
+from src.server.camera_runtime import BackendCamera, parse_camera_device
 from src.server.hardware_factory import create_grid_navigation_hardware
+from src.server.obstacle_recorder import ObstacleRecorder
+from src.server.obstacle_store import ObstacleStore, ObstacleStoreError
 from src.server.point_codec import PointValidationError
 from src.server.ride_service import RideService
 from src.server.runtime_state import RuntimeState, RuntimeStateError
@@ -24,7 +36,7 @@ from src.server.schemas import (
     ErrorDetail,
     ErrorResponse,
     GridResponse,
-    LatestMailResponse,
+    ObstacleRecordResponse,
     RideCreateRequest,
     RideStatusResponse,
 )
@@ -33,6 +45,14 @@ from src.server.schemas import (
 LOGGER = logging.getLogger(__name__)
 NAVIGATION_MODE_HARDWARE = "hardware"
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+OBSTACLE_CAPTURE_DIR = (
+    Path(__file__).resolve().parents[2] / "captures" / "obstacles"
+)
+from src.services.mail_sender import (
+    AsyncMailNotifier,
+    load_mail_config_from_env,
+    send_email,
+)
 
 
 def load_navigation_configuration(environ):
@@ -55,12 +75,26 @@ def load_navigation_configuration(environ):
     return initial_position, initial_heading
 
 
+def create_mail_notifier(environ):
+    """从环境变量创建 QQ 邮件异步发送器；配置缺失不阻止后端启动。"""
+
+    try:
+        config = load_mail_config_from_env(environ)
+    except ValueError as exc:
+        return AsyncMailNotifier(unavailable_reason=str(exc))
+    return AsyncMailNotifier(
+        send_fn=lambda subject, body: send_email(subject, body, config)
+    )
+
+
 INITIAL_POSITION, INITIAL_HEADING = load_navigation_configuration(os.environ)
 runtime_state = RuntimeState(
     initial_position=INITIAL_POSITION,
     initial_heading=INITIAL_HEADING,
 )
-ride_service = RideService(runtime_state)
+mail_notifier = create_mail_notifier(os.environ)
+ride_service = RideService(runtime_state, mail_notifier)
+obstacle_store = ObstacleStore(OBSTACLE_CAPTURE_DIR)
 
 
 @asynccontextmanager
@@ -72,7 +106,8 @@ async def lifespan(app_instance: FastAPI):
 
     分步逻辑：
     1. 启动前创建 5x5 网格导航硬件，失败则拒绝启动。
-    2. 关闭时强制终止活动行程，再停车并释放全部硬件资源。
+    2. 只创建一个长期摄像头所有者；打不开时保留后端其它能力。
+    3. 关闭时强制终止活动行程，先停车，再释放摄像头。
     """
     grid_definition = GridResponse.default()
     grid = [
@@ -80,7 +115,12 @@ async def lifespan(app_instance: FastAPI):
         for _row in grid_definition.rows
     ]
     hardware = create_grid_navigation_hardware(grid)
+    camera = BackendCamera(device=parse_camera_device(os.environ))
+    camera.start()
+    obstacle_recorder = ObstacleRecorder(obstacle_store, camera)
     app_instance.state.navigation_hardware = hardware
+    app_instance.state.backend_camera = camera
+    app_instance.state.obstacle_recorder = obstacle_recorder
 
     try:
         yield
@@ -91,12 +131,22 @@ async def lifespan(app_instance: FastAPI):
                 if active_ride is not None:
                     ride_service.force_cancel_ride(active_ride.id, "server_shutdown")
             finally:
-                hardware.close()
-                app_instance.state.navigation_hardware = None
+                try:
+                    hardware.close()
+                finally:
+                    try:
+                        camera.close()
+                    finally:
+                        mail_notifier.close()
+                        app_instance.state.navigation_hardware = None
+                        app_instance.state.backend_camera = None
+                        app_instance.state.obstacle_recorder = None
 
 
 app = FastAPI(title="4WD Car Backend", version="0.2.0", lifespan=lifespan)
 app.state.navigation_hardware = None
+app.state.backend_camera = None
+app.state.obstacle_recorder = None
 
 
 @app.exception_handler(PointValidationError)
@@ -211,6 +261,15 @@ def get_health():
         "service": "4wd-backend",
         "navigation_mode": NAVIGATION_MODE_HARDWARE,
         "hardware_ready": app.state.navigation_hardware is not None,
+        "camera_ready": (
+            app.state.backend_camera is not None
+            and app.state.backend_camera.available
+        ),
+        "camera_error": (
+            app.state.backend_camera.error
+            if app.state.backend_camera is not None
+            else None
+        ),
         "time": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -262,7 +321,8 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
     """
     request = RideCreateRequest.from_payload(payload)
     hardware = app.state.navigation_hardware
-    if hardware is None:
+    obstacle_recorder = app.state.obstacle_recorder
+    if hardware is None or obstacle_recorder is None:
         raise RuntimeStateError(
             "hardware_not_ready",
             "真实导航硬件尚未初始化",
@@ -273,6 +333,7 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
         ride_service.run_hardware_ride,
         ride.id,
         hardware.navigator,
+        obstacle_recorder,
     )
     return ride
 
@@ -381,18 +442,25 @@ def get_ride(ride_id: str):
     return runtime_state.get_ride(ride_id)
 
 
-@app.get("/api/mail/latest", response_model=LatestMailResponse)
-def get_latest_mail():
-    """返回最近一次到达邮件状态。
+@app.get("/api/obstacles", response_model=List[ObstacleRecordResponse])
+def list_obstacles():
+    """返回磁盘中全部障碍记录，后端重启后仍可读取。"""
 
-    参数说明：
-    无。
+    return obstacle_store.list_records()
 
-    分步逻辑：
-    1. 从 RuntimeState 读取最近邮件记录。
-    2. 返回给前端邮箱页面。
-    """
-    return runtime_state.get_latest_mail()
+
+@app.get("/api/obstacles/{record_id}/image")
+def get_obstacle_image(record_id: str):
+    """只返回已登记且真实存在的障碍 JPEG。"""
+
+    try:
+        image_path = obstacle_store.get_image_path(record_id)
+    except (FileNotFoundError, ObstacleStoreError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="障碍照片不存在",
+        ) from exc
+    return FileResponse(image_path, media_type="image/jpeg")
 
 
 app.mount(

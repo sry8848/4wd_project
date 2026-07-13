@@ -1,4 +1,5 @@
 import os
+from threading import Event
 import unittest
 from email import message_from_string
 from unittest.mock import patch
@@ -66,6 +67,41 @@ class MailSenderTest(unittest.TestCase):
         )
         self.assertIn("A X", body)
         self.assertIn("A A", body)
+
+    def test_async_notifier_reports_success_without_blocking_caller(self):
+        from src.services.mail_sender import AsyncMailNotifier
+
+        allow_send = Event()
+        completed = Event()
+        results = []
+
+        def send_fn(_subject, _body):
+            allow_send.wait(timeout=1)
+
+        notifier = AsyncMailNotifier(send_fn=send_fn)
+        self.addCleanup(notifier.close)
+
+        notifier.notify(
+            "到达起点 A1",
+            "正文",
+            lambda error: (results.append(error), completed.set()),
+        )
+        self.assertFalse(completed.is_set())
+
+        allow_send.set()
+        self.assertTrue(completed.wait(timeout=1))
+        self.assertEqual(results, [None])
+
+    def test_unavailable_notifier_reports_configuration_error(self):
+        from src.services.mail_sender import AsyncMailNotifier
+
+        results = []
+        notifier = AsyncMailNotifier(unavailable_reason="缺少 MAIL_PASSWORD")
+
+        notifier.notify("到达终点 E5", "正文", results.append)
+
+        self.assertEqual(len(results), 1)
+        self.assertIn("缺少 MAIL_PASSWORD", str(results[0]))
 
 
 if __name__ == "__main__":

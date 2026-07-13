@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from src.server.ride_service import RideService
 from src.server.runtime_state import RuntimeState
@@ -23,6 +25,7 @@ class FakeNavigator:
         cancel_requested_fn=None,
         node_reached_fn=None,
         stop_at_next_node_fn=None,
+        obstacle_result_fn=None,
     ):
         self.calls.append((start, end, initial_heading))
         nodes = self.segment_nodes.pop(0) if self.segment_nodes else []
@@ -40,7 +43,9 @@ class FakeNavigator:
 class RideServiceHardwareRideTest(unittest.TestCase):
     def setUp(self):
         self.state = RuntimeState()
-        self.service = RideService(self.state)
+        self.mail_notifier = Mock()
+        self.service = RideService(self.state, self.mail_notifier)
+        self.obstacle_recorder = Mock()
 
     def submit(self, start="A1", waypoints=None, end="E5"):
         request = RideCreateRequest.from_payload(
@@ -77,7 +82,11 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             ]
         )
 
-        finished = self.service.run_hardware_ride(ride.id, navigator)
+        finished = self.service.run_hardware_ride(
+            ride.id,
+            navigator,
+            self.obstacle_recorder,
+        )
 
         self.assertEqual(finished.status, "arrived")
         self.assertEqual(
@@ -107,7 +116,20 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             ],
         )
         self.assertEqual(finished.route, finished.progress)
-        self.assertEqual(finished.mail_status, "disabled")
+        self.assertEqual(self.mail_notifier.notify.call_count, 3)
+        subjects = [call.args[0] for call in self.mail_notifier.notify.call_args_list]
+        self.assertEqual(
+            subjects,
+            [
+                "4WD 小车到达起点：A1",
+                "4WD 小车到达途径点：C2",
+                "4WD 小车到达终点：E5",
+            ],
+        )
+        self.assertIn(
+            "完整路线：A1 → C2 → E5",
+            self.mail_notifier.notify.call_args_list[1].args[1],
+        )
         self.assertEqual(self.state.get_car_status().heading, "south")
 
     def test_hardware_ride_stops_updating_after_cancel(self):
@@ -125,7 +147,11 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             after_node_fn=cancel_once,
         )
 
-        finished = self.service.run_hardware_ride(ride.id, navigator)
+        finished = self.service.run_hardware_ride(
+            ride.id,
+            navigator,
+            self.obstacle_recorder,
+        )
 
         self.assertEqual(finished.status, "canceled")
         self.assertEqual(finished.progress, ["C3", "B3"])
@@ -133,7 +159,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         self.assertEqual(finished.current_position, "B3")
         self.assertIn("节点 B3 停车", finished.eta_text)
         self.assertEqual(len(navigator.calls), 1)
-        self.assertEqual(self.state.get_latest_mail().status, "none")
+        self.mail_notifier.notify.assert_not_called()
 
     def test_cancel_requested_before_segment_still_moves_to_next_forward_node(self):
         ride = self.submit()
@@ -145,7 +171,11 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             [[((1, 2), "north"), ((0, 2), "north")]],
         )
 
-        finished = self.service.run_hardware_ride(ride.id, navigator)
+        finished = self.service.run_hardware_ride(
+            ride.id,
+            navigator,
+            self.obstacle_recorder,
+        )
 
         self.assertEqual(finished.status, "canceled")
         self.assertEqual(finished.progress, ["C3", "B3"])
@@ -157,12 +187,81 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         ride = self.submit()
         navigator = FakeNavigator([[]], results=[NAV_NO_PATH])
 
-        finished = self.service.run_hardware_ride(ride.id, navigator)
+        finished = self.service.run_hardware_ride(
+            ride.id,
+            navigator,
+            self.obstacle_recorder,
+        )
 
         self.assertEqual(finished.status, "failed")
         self.assertIn("无法规划到点位 A1", finished.error_message)
         self.assertEqual(finished.current_position, "C3")
-        self.assertEqual(self.state.get_latest_mail().status, "none")
+        self.mail_notifier.notify.assert_not_called()
+
+    def test_mail_failure_adds_system_event_without_failing_arrived_ride(self):
+        ride = self.submit(start="C3", end="C4")
+        navigator = FakeNavigator([[((2, 3), "east")]])
+
+        finished = self.service.run_hardware_ride(
+            ride.id,
+            navigator,
+            self.obstacle_recorder,
+        )
+        result_callbacks = [
+            call.args[2] for call in self.mail_notifier.notify.call_args_list
+        ]
+        result_callbacks[-1](RuntimeError("SMTP rejected"))
+
+        self.assertEqual(finished.status, "arrived")
+        self.assertEqual(self.state.get_ride(ride.id).status, "arrived")
+        events, _next_after = self.state.list_ride_events(ride.id)
+        self.assertTrue(
+            any(
+                event.type == "system" and "SMTP rejected" in event.text
+                for event in events
+            )
+        )
+
+    def test_obstacle_callback_persists_record_and_publishes_event(self):
+        ride = self.submit(start="C4", end="C5")
+        record = SimpleNamespace(
+            id="obstacle_20260714_083000_123456_C3_C4",
+            distance_cm=12.5,
+            status="recovered",
+        )
+        self.obstacle_recorder.record.return_value = record
+
+        class ObstacleNavigator(FakeNavigator):
+            def navigate(self, *args, **kwargs):
+                if not hasattr(self, "obstacle_reported"):
+                    self.obstacle_reported = True
+                    kwargs["obstacle_result_fn"](
+                        (2, 2),
+                        (2, 3),
+                        12.5,
+                        "recovered_to_start_node",
+                        "east",
+                    )
+                return NAV_ARRIVED
+
+        finished = self.service.run_hardware_ride(
+            ride.id,
+            ObstacleNavigator([[], []]),
+            self.obstacle_recorder,
+        )
+
+        self.assertEqual(finished.status, "arrived")
+        self.obstacle_recorder.record.assert_called_once_with(
+            ride_id=ride.id,
+            from_point="C3",
+            to_point="C4",
+            distance_cm=12.5,
+            recovery_status="recovered_to_start_node",
+        )
+        events, _next_after = self.state.list_ride_events(ride.id)
+        obstacle_event = [event for event in events if event.type == "obstacle"][0]
+        self.assertEqual(obstacle_event.obstacle_id, record.id)
+        self.assertIn("12.5 cm", obstacle_event.text)
 
 
 if __name__ == "__main__":

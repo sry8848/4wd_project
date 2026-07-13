@@ -5,7 +5,6 @@ from src.server.schemas import (
     CarStatusResponse,
     ErrorResponse,
     GridResponse,
-    LatestMailResponse,
     RideCreateRequest,
     RideEventResponse,
     RideStatusResponse,
@@ -92,7 +91,7 @@ class ServerSchemasTest(unittest.TestCase):
             },
         )
 
-    def test_ride_status_response_serializes_route_progress_and_mail_status(self):
+    def test_ride_status_response_serializes_route_and_progress(self):
         response = RideStatusResponse(
             id="ride-1",
             status="to_pickup",
@@ -103,7 +102,6 @@ class ServerSchemasTest(unittest.TestCase):
             route=["C3", "B3", "A3", "A2", "A1", "B1", "C1", "C2", "C3", "C4", "C5", "D5", "E5"],
             progress=["C3", "B3"],
             eta_text="来车中",
-            mail_status="pending",
             error_message=None,
             created_at="2026-07-09T15:30:00+08:00",
             updated_at="2026-07-09T15:30:03+08:00",
@@ -115,26 +113,18 @@ class ServerSchemasTest(unittest.TestCase):
         self.assertEqual(data["status"], "to_pickup")
         self.assertEqual(data["waypoints"], ["C2"])
         self.assertEqual(data["progress"], ["C3", "B3"])
-        self.assertEqual(data["mail_status"], "pending")
         self.assertIsNone(data["error_message"])
 
-    def test_event_and_mail_responses_serialize_frontend_fields(self):
+    def test_event_response_serializes_frontend_fields(self):
         event = RideEventResponse(
             seq=1,
             type="car",
             text="已到达起点 A1，请上车",
             created_at="2026-07-09T15:30:06+08:00",
+            obstacle_id=None,
         )
-        mail = LatestMailResponse(
-            status="sent",
-            subject="4WD 小车到达通知：E5",
-            body="小车已完成路线 A1 -> E5，当前位置 E5。",
-            sent_at="2026-07-09T15:31:20+08:00",
-            error_message=None,
-        )
-
         self.assertEqual(event.to_dict()["type"], "car")
-        self.assertEqual(mail.to_dict()["status"], "sent")
+        self.assertIsNone(event.to_dict()["obstacle_id"])
 
 
 if __name__ == "__main__":

@@ -56,7 +56,12 @@ class FakeEdgeFollower:
             status = self.edge_statuses.pop(0)
         else:
             status = EDGE_REACHED_NEXT_NODE
-        return EdgeExecutionResult(status=status, final_heading=target_heading)
+        distance = 12.5 if status == EDGE_BLOCKED_ON_PLANNED_EDGE else None
+        return EdgeExecutionResult(
+            status=status,
+            final_heading=target_heading,
+            obstacle_distance_cm=distance,
+        )
 
     def recover_to_start_node(
         self,
@@ -140,7 +145,19 @@ class GridNavigatorTest(unittest.TestCase):
             recovery_statuses=[EDGE_RECOVERED_TO_START_NODE],
         )
 
-        result = navigator.navigate((0, 0), (0, 1), HEADING_EAST)
+        obstacle_results = []
+
+        def report_obstacle(*args):
+            obstacle_results.append(
+                (args, len(self.edge_follower.execute_calls), len(self.edge_follower.recover_calls))
+            )
+
+        result = navigator.navigate(
+            (0, 0),
+            (0, 1),
+            HEADING_EAST,
+            obstacle_result_fn=report_obstacle,
+        )
 
         self.assertEqual(result, NAV_ARRIVED)
         self.assertEqual(navigator.current_node, (0, 1))
@@ -158,6 +175,22 @@ class GridNavigatorTest(unittest.TestCase):
                 (HEADING_EAST, HEADING_NORTH, 5),
             ],
         )
+        self.assertEqual(
+            obstacle_results,
+            [
+                (
+                    (
+                        (0, 0),
+                        (0, 1),
+                        12.5,
+                        EDGE_RECOVERED_TO_START_NODE,
+                        HEADING_EAST,
+                    ),
+                    1,
+                    1,
+                )
+            ],
+        )
 
     def test_navigate_fails_when_recovery_fails_after_dynamic_block(self):
         navigator = self.build_navigator(
@@ -169,12 +202,30 @@ class GridNavigatorTest(unittest.TestCase):
             recovery_statuses=[EDGE_RECOVERY_FAILED],
         )
 
-        result = navigator.navigate((0, 0), (0, 1), HEADING_EAST)
+        obstacle_results = []
+        result = navigator.navigate(
+            (0, 0),
+            (0, 1),
+            HEADING_EAST,
+            obstacle_result_fn=lambda *args: obstacle_results.append(args),
+        )
 
         self.assertEqual(result, NAV_FAILED)
         self.assertEqual(navigator.current_node, (0, 0))
         self.assertIn(frozenset({(0, 0), (0, 1)}), navigator.dynamic_blocked_edges)
         self.assertEqual(self.motor.calls[-1], ("brake",))
+        self.assertEqual(
+            obstacle_results,
+            [
+                (
+                    (0, 0),
+                    (0, 1),
+                    12.5,
+                    EDGE_RECOVERY_FAILED,
+                    HEADING_EAST,
+                )
+            ],
+        )
 
     def test_navigate_returns_no_path_when_static_edges_exhaust_routes(self):
         navigator = self.build_navigator(

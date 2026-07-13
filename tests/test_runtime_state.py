@@ -54,7 +54,6 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertEqual(ride.current_position, "C3")
         self.assertEqual(ride.progress, ["C3"])
         self.assertEqual(ride.eta_text, "派单中")
-        self.assertEqual(ride.mail_status, "pending")
         self.assertEqual(status.mode, "running")
         self.assertEqual(status.active_ride_id, ride.id)
         self.assertEqual(events[0].type, "passenger")
@@ -86,6 +85,25 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertEqual([event.seq for event in events], [2, 3])
         self.assertEqual(events[0].text, "收到叫车请求，当前上报位置 C3")
         self.assertEqual(next_after, 3)
+
+    def test_obstacle_event_keeps_record_id(self):
+        ride = self.state.create_ride(
+            RideCreateRequest.from_payload(
+                {"start": "A1", "waypoints": [], "end": "E5"}
+            )
+        )
+
+        event = self.state.append_ride_event(
+            ride.id,
+            "obstacle",
+            "检测到障碍 C3—C4",
+            obstacle_id="obstacle_20260714_083000_123456_C3_C4",
+        )
+
+        self.assertEqual(
+            event.obstacle_id,
+            "obstacle_20260714_083000_123456_C3_C4",
+        )
 
     def test_update_ride_progress_updates_car_status_and_ride_fields(self):
         ride = self.state.create_ride(
@@ -132,23 +150,6 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertEqual(finished.current_position, "E5")
         self.assertEqual(car_status.mode, "idle")
         self.assertIsNone(car_status.active_ride_id)
-
-    def test_latest_mail_defaults_and_updates(self):
-        latest = self.state.get_latest_mail()
-
-        self.assertEqual(latest.status, "none")
-        self.assertEqual(latest.subject, "暂无真实邮件")
-
-        updated = self.state.record_latest_mail(
-            status="sent",
-            subject="4WD 小车到达通知：E5",
-            body="小车已完成路线 A1 → E5，当前位置 E5。",
-            error_message=None,
-        )
-
-        self.assertEqual(updated.status, "sent")
-        self.assertEqual(updated.sent_at, "2026-07-09T15:30:01+08:00")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from email.mime.text import MIMEText
+import logging
 import os
 import smtplib
 import ssl
+from typing import Callable, Optional
 
 
 DEFAULT_TIMEOUT_SECONDS = 10
@@ -18,6 +21,7 @@ REQUIRED_ENV_NAMES = (
     "MAIL_FROM",
     "MAIL_TO",
 )
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,29 +47,30 @@ class MailConfig:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
 
 
-def load_mail_config_from_env() -> MailConfig:
+def load_mail_config_from_env(environ=None) -> MailConfig:
     """从环境变量读取邮件配置。
 
     参数说明：
-    无。函数只读取当前进程环境变量，不读取文件，避免把授权码写入仓库。
+    environ: 环境变量映射；默认读取当前进程环境，不读取配置文件。
     """
 
-    missing_names = [name for name in REQUIRED_ENV_NAMES if not os.environ.get(name)]
+    values = os.environ if environ is None else environ
+    missing_names = [name for name in REQUIRED_ENV_NAMES if not values.get(name)]
     if missing_names:
         raise ValueError("缺少邮件环境变量: " + ", ".join(missing_names))
 
     try:
-        smtp_port = int(os.environ["MAIL_SMTP_PORT"])
+        smtp_port = int(values["MAIL_SMTP_PORT"])
     except ValueError as exc:
         raise ValueError("MAIL_SMTP_PORT 必须是整数") from exc
 
     return MailConfig(
-        smtp_host=os.environ["MAIL_SMTP_HOST"],
+        smtp_host=values["MAIL_SMTP_HOST"],
         smtp_port=smtp_port,
-        username=os.environ["MAIL_USERNAME"],
-        password=os.environ["MAIL_PASSWORD"],
-        mail_from=os.environ["MAIL_FROM"],
-        mail_to=os.environ["MAIL_TO"],
+        username=values["MAIL_USERNAME"],
+        password=values["MAIL_PASSWORD"],
+        mail_from=values["MAIL_FROM"],
+        mail_to=values["MAIL_TO"],
     )
 
 
@@ -95,3 +100,69 @@ def send_email(subject: str, body: str, config: MailConfig) -> None:
         # 3. 登录邮箱并发送给单个收件人。
         server.login(config.username, config.password)
         server.sendmail(config.mail_from, [config.mail_to], message.as_string())
+
+
+class AsyncMailNotifier:
+    """按到点顺序在单个后台线程中发送 QQ SMTP 邮件。
+
+    参数说明：
+    send_fn: 已绑定 MailConfig 的同步发送函数。
+    unavailable_reason: 邮件配置不可用时的明确原因；与 send_fn 二选一。
+    """
+
+    def __init__(
+        self,
+        send_fn: Optional[Callable[[str, str], None]] = None,
+        unavailable_reason: Optional[str] = None,
+    ):
+        if (send_fn is None) == (unavailable_reason is None):
+            raise ValueError("send_fn 与 unavailable_reason 必须且只能提供一个")
+        self._send_fn = send_fn
+        self.unavailable_reason = unavailable_reason
+        self._executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="qq-mail")
+            if send_fn is not None
+            else None
+        )
+        self._closed = False
+
+    @property
+    def available(self) -> bool:
+        """返回 QQ 邮件环境配置是否完整。"""
+
+        return self._send_fn is not None
+
+    def notify(self, subject: str, body: str, result_fn):
+        """异步发送一封邮件，并用异常或 None 回报结果。
+
+        参数说明：
+        subject/body: 纯文本邮件主题和正文。
+        result_fn: 接收一个参数；成功为 None，失败为异常对象。
+        """
+
+        if self._closed:
+            raise RuntimeError("邮件通知器已经关闭")
+        if self._executor is None:
+            result_fn(RuntimeError(self.unavailable_reason))
+            return None
+
+        future = self._executor.submit(self._send_fn, subject, body)
+
+        def report_result(completed):
+            try:
+                error = completed.exception()
+                result_fn(error)
+            except Exception:
+                LOGGER.exception("Mail result callback failed")
+
+        future.add_done_callback(report_result)
+        return future
+
+    def close(self):
+        """等待已排队邮件结束并关闭唯一发送线程。"""
+
+        if self._closed:
+            return
+        self._closed = True
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)

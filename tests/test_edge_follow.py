@@ -104,7 +104,8 @@ class FakeObstacleSensor:
             obstructed = self.obstructed_values.pop(0)
         else:
             obstructed = False
-        return self.sequence, -1.0, obstructed
+        distance = 12.0 if obstructed else 30.0
+        return self.sequence, distance, obstructed
 
 
 class FakeReverseRadar:
@@ -149,9 +150,9 @@ class EdgeFollowerTest(unittest.TestCase):
 
         gate.start_edge()
 
-        self.assertFalse(gate.check_blocked())
-        self.assertFalse(gate.check_blocked())
-        self.assertTrue(gate.check_blocked())
+        self.assertIsNone(gate.check_blocked())
+        self.assertIsNone(gate.check_blocked())
+        self.assertEqual(gate.check_blocked(), 11.0)
         self.assertEqual(
             logs,
             [
@@ -177,10 +178,10 @@ class EdgeFollowerTest(unittest.TestCase):
 
         gate.start_edge()
 
-        self.assertFalse(gate.check_blocked())
-        self.assertFalse(gate.check_blocked())
-        self.assertFalse(gate.check_blocked())
-        self.assertTrue(gate.check_blocked())
+        self.assertIsNone(gate.check_blocked())
+        self.assertIsNone(gate.check_blocked())
+        self.assertIsNone(gate.check_blocked())
+        self.assertEqual(gate.check_blocked(), 10.0)
 
     def build_follower(
         self,
@@ -375,6 +376,7 @@ class EdgeFollowerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, EDGE_BLOCKED_ON_PLANNED_EDGE)
+        self.assertEqual(result.obstacle_distance_cm, 12.0)
         self.assertIn(("forward", 20, 20), self.motor.calls)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
