@@ -412,10 +412,13 @@ EDGE_TRAVEL
 1. 停车。
 2. 沿当前计划边直接倒车。
 3. 按倒车巡线规则修正左右轮。
-4. 沿原线退回起点节点。
-5. 稳定入点确认。
-6. 停车。
-7. 返回 `recovered_to_start_node`。
+4. 短暂全白时，以低速延续最后一次有效修正方向找线。
+5. 沿原线退回起点节点。
+6. 稳定入点确认。
+7. 停车。
+8. 返回 `recovered_to_start_node`。
+
+倒车恢复开始后如果从未看到黑线，保持刹车，不做无方向依据的盲倒。已经看到黑线后，短暂全白最多按 `line_lost_timeout` 找线；默认 5 秒，整个恢复仍受 `recovery_max_seconds` 限制。
 
 恢复阶段禁止：
 
@@ -492,6 +495,7 @@ node_center_seconds = 0.08
 obstacle_arm_delay = 0.3
 obstacle_clear_samples = 1
 obstacle_confirm_samples = 2
+line_lost_timeout = 5.0
 reverse_speed = 15
 reverse_turn_speed = 20
 ```

@@ -386,6 +386,29 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertEqual(result.reason, EDGE_LINE_LOST)
         self.assertNotIn(("backward", 15, 15), self.motor.calls)
 
+    def test_reverse_recovery_reuses_last_direction_during_temporary_line_loss(self):
+        follower = self.build_follower(
+            [
+                RIGHT_READING,
+                WHITE_READING,
+                LINE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+            reverse_speed=11,
+            reverse_turn_speed=22,
+        )
+
+        result = follower.recover_to_start_node(
+            return_heading=HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_RECOVERED_TO_START_NODE)
+        self.assertIn(("backward", 0, 22), self.motor.calls)
+        self.assertIn(("backward", 0, 11), self.motor.calls)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
     def test_reverse_recovery_ticks_and_stops_reverse_radar(self):
         radar = FakeReverseRadar()
         follower = self.build_follower(

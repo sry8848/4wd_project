@@ -81,7 +81,7 @@ def create_grid_navigation_hardware(
     obstacle_clear_samples=1,
     obstacle_confirm_samples=2,
     line_acquire_timeout=3.0,
-    line_lost_timeout=1.0,
+    line_lost_timeout=5.0,
     reverse_speed=15,
     reverse_turn_speed=20,
     edge_max_seconds=20,
