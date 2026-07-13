@@ -42,15 +42,24 @@ hardware_ready = true
 5. 再次从相邻节点测试运行中“取消行程”，确认小车刹车且进度不再变化。
 6. 相邻节点和取消都通过后，再测试包含转向的两条边路线。
 
-## 4. 当前实测转向参数
+## 4. 当前实测导航基线
 
-参数必须与 `spin_speed = 30` 配套：
+手动工具和网页实车模式使用同一组默认值：
 
 ```text
+forward speed = 20
+line turn speed = 80
+left correction = 80
+right correction = 100
+search speed = 5
+spin speed = 30
 90° left  = 0.6 秒
 90° right = 0.5 秒
 180° left = 1.2 秒
 180° right = 1.1 秒
+edge timeout = 20 秒
+recovery timeout = 8 秒
+ultrasonic threshold = 20 cm
 ```
 
 当前掉头实现固定左旋，因此运行时使用 `180° left = 1.2 秒`。完整事实记录见 `docs/test-records.md`。

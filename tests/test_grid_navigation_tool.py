@@ -73,6 +73,20 @@ class GridNavigationToolTest(unittest.TestCase):
             [((0, 0), (0, 1), "east")],
         )
 
+    def test_confirmed_real_car_defaults_are_forwarded(self):
+        captured, _hardware, _output = self.run_tool()
+        options = captured["kwargs"]
+
+        self.assertEqual(options["forward_speed"], 20)
+        self.assertEqual(options["line_turn_speed"], 80)
+        self.assertEqual(options["line_left_turn_speed"], 80)
+        self.assertEqual(options["line_right_turn_speed"], 100)
+        self.assertEqual(options["search_speed"], 5)
+        self.assertEqual(options["spin_speed"], 30)
+        self.assertEqual(options["edge_max_seconds"], 20)
+        self.assertEqual(options["recovery_max_seconds"], 8)
+        self.assertEqual(options["ultrasonic_threshold_cm"], 20)
+
     def test_ultrasonic_and_edge_parameters_are_forwarded(self):
         captured, _hardware, _output = self.run_tool(
             [

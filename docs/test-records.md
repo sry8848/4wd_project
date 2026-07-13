@@ -15,3 +15,18 @@
 
 这些时间只与 `spin_speed = 30` 配套，改变速度、电池状态、轮胎或场地后
 必须重新校准，不能单独复制时间值。
+
+## 网格导航成功基线
+
+- 事实来源：用户确认此前当前小车使用本组参数导航无异常。
+- `forward_speed = 20`
+- `line_turn_speed = 80`
+- `line_left_turn_speed = 80`
+- `line_right_turn_speed = 100`
+- `search_speed = 5`
+- `spin_speed = 30`
+- `edge_max_seconds = 20`
+- `recovery_max_seconds = 8`
+- `ultrasonic_threshold_cm = 20`
+
+本组参数与上面的左右粗转时间共同构成当前小车唯一确认的网格导航基线。

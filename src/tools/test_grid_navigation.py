@@ -43,16 +43,16 @@ def parse_args():
     parser.add_argument(
         "--line-left-turn-speed",
         type=int,
-        default=None,
-        help="left correction speed; defaults to --line-turn-speed",
+        default=80,
+        help="left correction speed; current car baseline is 80",
     )
     parser.add_argument(
         "--line-right-turn-speed",
         type=int,
-        default=None,
-        help="right correction speed; defaults to --line-turn-speed",
+        default=100,
+        help="right correction speed; current car baseline is 100",
     )
-    parser.add_argument("--search-speed", type=int, default=8)
+    parser.add_argument("--search-speed", type=int, default=5)
     parser.add_argument("--spin-speed", type=int, default=30)
     parser.add_argument("--left-turn-rough-seconds", type=float, default=0.6)
     parser.add_argument("--right-turn-rough-seconds", type=float, default=0.5)
@@ -68,10 +68,10 @@ def parse_args():
     parser.add_argument("--line-lost-timeout", type=float, default=1.0)
     parser.add_argument("--reverse-speed", type=int, default=15)
     parser.add_argument("--reverse-turn-speed", type=int, default=20)
-    parser.add_argument("--edge-timeout", type=float, default=5)
-    parser.add_argument("--recovery-timeout", type=float, default=5)
+    parser.add_argument("--edge-timeout", type=float, default=20)
+    parser.add_argument("--recovery-timeout", type=float, default=8)
     parser.add_argument("--delay", type=float, default=0.02)
-    parser.add_argument("--threshold", type=int, default=None, help="ultrasonic obstacle threshold cm")
+    parser.add_argument("--threshold", type=int, default=20, help="ultrasonic obstacle threshold cm")
     parser.add_argument(
         "--no-ultrasonic",
         action="store_true",
