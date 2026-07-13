@@ -13,20 +13,13 @@ import argparse
 import sys
 
 from src.algorithms.astar import PASSABLE, format_path
-from src.hardware.buzzer import Buzzer
-from src.hardware.line_sensor import LineSensor
-from src.hardware.motor import MotorController
-from src.hardware.ultrasonic import UltrasonicSensor
-from src.tasks.edge_follow import CachedObstacleSensor, EdgeFollower
+from src.server.hardware_factory import create_grid_navigation_hardware
 from src.tasks.grid_navigation import (
     HEADING_EAST,
     HEADING_NORTH,
     HEADING_SOUTH,
     HEADING_WEST,
-    GridNavigator,
 )
-from src.tasks.line_follow import LineFollower
-from src.tasks.reverse_radar import CachedReverseRadar
 
 
 HEADINGS = (HEADING_NORTH, HEADING_EAST, HEADING_SOUTH, HEADING_WEST)
@@ -175,37 +168,18 @@ def main():
         for edge in args.blocked_edge
     }
 
-    motor = None
-    sensor = None
-    ultrasonic = None
-    buzzer = None
-    reverse_radar = None
+    hardware = None
     try:
-        motor = MotorController()
-        sensor = LineSensor()
-        obstacle_sensor = None
-        if not args.no_ultrasonic:
-            ultrasonic = UltrasonicSensor(threshold_cm=args.threshold)
-            ultrasonic.start_monitoring()
-            obstacle_sensor = CachedObstacleSensor(ultrasonic)
-            if not args.no_reverse_radar:
-                buzzer = Buzzer()
-                reverse_radar = CachedReverseRadar(ultrasonic, buzzer)
         debug_fn = print if args.debug else None
-        line_follower = LineFollower(
-            sensor,
-            motor,
+        hardware = create_grid_navigation_hardware(
+            grid,
+            static_blocked_edges=static_blocked_edges,
             forward_speed=args.forward_speed,
-            turn_speed=args.line_turn_speed,
-            left_turn_speed=args.line_left_turn_speed,
-            right_turn_speed=args.line_right_turn_speed,
+            line_turn_speed=args.line_turn_speed,
+            line_left_turn_speed=args.line_left_turn_speed,
+            line_right_turn_speed=args.line_right_turn_speed,
             search_speed=args.search_speed,
-            debug_output=sys.stdout if args.line_debug else None,
-        )
-        edge_follower = EdgeFollower(
-            line_follower,
-            obstacle_sensor=obstacle_sensor,
-            turn_speed=args.spin_speed,
+            spin_speed=args.spin_speed,
             turn_rough_seconds=turn_rough_seconds,
             uturn_rough_seconds=uturn_rough_seconds,
             leave_node_min_seconds=args.leave_node_min_seconds,
@@ -219,19 +193,16 @@ def main():
             line_lost_timeout=args.line_lost_timeout,
             reverse_speed=args.reverse_speed,
             reverse_turn_speed=args.reverse_turn_speed,
-            reverse_radar=reverse_radar,
-            delay_seconds=args.delay,
-            debug_fn=debug_fn,
-        )
-        navigator = GridNavigator(
-            grid,
-            edge_follower,
-            motor,
-            static_blocked_edges=static_blocked_edges,
             edge_max_seconds=args.edge_timeout,
             recovery_max_seconds=args.recovery_timeout,
+            delay_seconds=args.delay,
+            ultrasonic_enabled=not args.no_ultrasonic,
+            ultrasonic_threshold_cm=args.threshold,
+            reverse_radar_enabled=not args.no_reverse_radar,
+            line_debug_output=sys.stdout if args.line_debug else None,
             debug_fn=debug_fn,
         )
+        navigator = hardware.navigator
 
         print(f"grid: {args.rows}x{args.cols}")
         print(f"start={args.start} end={args.end} heading={args.heading}")
@@ -246,18 +217,8 @@ def main():
     except KeyboardInterrupt:
         print("\n用户中断，停车并释放资源。")
     finally:
-        if motor is not None:
-            motor.brake()
-        if sensor is not None:
-            sensor.close()
-        if reverse_radar is not None:
-            reverse_radar.stop()
-        if buzzer is not None:
-            buzzer.close()
-        if ultrasonic is not None:
-            ultrasonic.close()
-        if motor is not None:
-            motor.close()
+        if hardware is not None:
+            hardware.close()
 
 
 if __name__ == "__main__":
