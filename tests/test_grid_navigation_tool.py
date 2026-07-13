@@ -1,4 +1,5 @@
 import io
+import inspect
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -88,10 +89,50 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertEqual(options["uturn_rough_seconds"], 0.8)
         self.assertEqual(options["turn_acquire_timeout"], 5.0)
         self.assertEqual(options["leave_node_min_seconds"], 0.10)
+        self.assertEqual(options["node_clear_samples"], 1)
         self.assertEqual(options["reverse_speed"], 5)
         self.assertEqual(options["edge_max_seconds"], 20)
         self.assertEqual(options["recovery_max_seconds"], 8)
         self.assertEqual(options["ultrasonic_threshold_cm"], 20)
+
+    def test_cli_navigation_defaults_match_web_backend_defaults(self):
+        captured, _hardware, _output = self.run_tool()
+        options = captured["kwargs"]
+        factory_parameters = inspect.signature(
+            tool.create_grid_navigation_hardware
+        ).parameters
+        shared_defaults = (
+            "forward_speed",
+            "line_turn_speed",
+            "line_left_turn_speed",
+            "line_right_turn_speed",
+            "search_speed",
+            "spin_speed",
+            "left_turn_rough_seconds",
+            "right_turn_rough_seconds",
+            "uturn_rough_seconds",
+            "turn_acquire_timeout",
+            "leave_node_min_seconds",
+            "node_clear_samples",
+            "node_confirm_samples",
+            "node_center_seconds",
+            "obstacle_confirm_samples",
+            "line_acquire_timeout",
+            "line_lost_timeout",
+            "reverse_speed",
+            "reverse_turn_speed",
+            "edge_max_seconds",
+            "recovery_max_seconds",
+            "delay_seconds",
+            "ultrasonic_threshold_cm",
+        )
+
+        for option_name in shared_defaults:
+            with self.subTest(option=option_name):
+                self.assertEqual(
+                    options[option_name],
+                    factory_parameters[option_name].default,
+                )
 
     def test_ultrasonic_and_edge_parameters_are_forwarded(self):
         captured, _hardware, _output = self.run_tool(
