@@ -2,6 +2,7 @@ import unittest
 
 from src.tasks.edge_follow import (
     EDGE_BLOCKED_ON_PLANNED_EDGE,
+    EDGE_CANCELED,
     EDGE_RECOVERED_TO_START_NODE,
     EDGE_RECOVERY_FAILED,
     EDGE_REACHED_NEXT_NODE,
@@ -13,6 +14,7 @@ from src.tasks.grid_navigation import (
     HEADING_SOUTH,
     HEADING_WEST,
     NAV_ARRIVED,
+    NAV_CANCELED,
     NAV_FAILED,
     NAV_NO_PATH,
     GridNavigator,
@@ -40,16 +42,31 @@ class FakeEdgeFollower:
         self.execute_calls = []
         self.recover_calls = []
 
-    def execute_planned_edge(self, current_heading, target_heading, max_seconds):
+    def execute_planned_edge(
+        self,
+        current_heading,
+        target_heading,
+        max_seconds,
+        cancel_requested_fn=None,
+    ):
         self.execute_calls.append((current_heading, target_heading, max_seconds))
+        if cancel_requested_fn is not None and cancel_requested_fn():
+            return EdgeExecutionResult(status=EDGE_CANCELED)
         if self.edge_statuses:
             status = self.edge_statuses.pop(0)
         else:
             status = EDGE_REACHED_NEXT_NODE
         return EdgeExecutionResult(status=status, final_heading=target_heading)
 
-    def recover_to_start_node(self, return_heading=None, max_seconds=None):
+    def recover_to_start_node(
+        self,
+        return_heading=None,
+        max_seconds=None,
+        cancel_requested_fn=None,
+    ):
         self.recover_calls.append((return_heading, max_seconds))
+        if cancel_requested_fn is not None and cancel_requested_fn():
+            return EdgeExecutionResult(status=EDGE_CANCELED)
         if self.recovery_statuses:
             status = self.recovery_statuses.pop(0)
         else:
@@ -185,6 +202,67 @@ class GridNavigatorTest(unittest.TestCase):
         self.assertEqual(self.edge_follower.execute_calls, [(HEADING_NORTH, HEADING_EAST, 5)])
         self.assertEqual(self.motor.calls, [("brake",)])
         self.assertEqual(navigator.current_heading, HEADING_EAST)
+
+    def test_navigate_cancels_before_starting_an_edge(self):
+        navigator = self.build_navigator(
+            [["A", "A"]],
+            [EDGE_REACHED_NEXT_NODE],
+        )
+
+        result = navigator.navigate(
+            (0, 0),
+            (0, 1),
+            HEADING_EAST,
+            cancel_requested_fn=lambda: True,
+        )
+
+        self.assertEqual(result, NAV_CANCELED)
+        self.assertEqual(self.edge_follower.execute_calls, [])
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_navigate_reports_each_reached_trusted_node(self):
+        navigator = self.build_navigator(
+            [["A", "A", "A"]],
+            [EDGE_REACHED_NEXT_NODE, EDGE_REACHED_NEXT_NODE],
+        )
+        reached_nodes = []
+
+        result = navigator.navigate(
+            (0, 0),
+            (0, 2),
+            HEADING_EAST,
+            node_reached_fn=lambda node, heading: reached_nodes.append((node, heading)),
+        )
+
+        self.assertEqual(result, NAV_ARRIVED)
+        self.assertEqual(
+            reached_nodes,
+            [
+                ((0, 1), HEADING_EAST),
+                ((0, 2), HEADING_EAST),
+            ],
+        )
+
+    def test_navigate_cancels_after_reporting_a_reached_node(self):
+        navigator = self.build_navigator(
+            [["A", "A", "A"]],
+            [EDGE_REACHED_NEXT_NODE, EDGE_REACHED_NEXT_NODE],
+        )
+        reached_nodes = []
+
+        result = navigator.navigate(
+            (0, 0),
+            (0, 2),
+            HEADING_EAST,
+            cancel_requested_fn=lambda: bool(reached_nodes),
+            node_reached_fn=lambda node, heading: reached_nodes.append((node, heading)),
+        )
+
+        self.assertEqual(result, NAV_CANCELED)
+        self.assertEqual(reached_nodes, [((0, 1), HEADING_EAST)])
+        self.assertEqual(navigator.current_node, (0, 1))
+        self.assertEqual(len(self.edge_follower.execute_calls), 1)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import time
 from src.algorithms.astar import astar, format_path
 from src.tasks.edge_follow import (
     EDGE_BLOCKED_ON_PLANNED_EDGE,
+    EDGE_CANCELED,
     EDGE_REACHED_NEXT_NODE,
     EDGE_RECOVERED_TO_START_NODE,
 )
@@ -18,6 +19,7 @@ HEADING_WEST = "west"
 NAV_ARRIVED = "arrived"
 NAV_NO_PATH = "no_path"
 NAV_FAILED = "failed"
+NAV_CANCELED = "canceled"
 
 _HEADINGS = (HEADING_NORTH, HEADING_EAST, HEADING_SOUTH, HEADING_WEST)
 
@@ -73,13 +75,26 @@ class GridNavigator:
         if self._debug is not None:
             self._debug(message)
 
-    def navigate(self, start, end, initial_heading):
+    def navigate(
+        self,
+        start,
+        end,
+        initial_heading,
+        cancel_requested_fn=None,
+        node_reached_fn=None,
+    ):
         """Navigate from start to end using trusted-node state transitions.
 
         Parameters:
         start: Start coordinate as (row, col).
         end: Target coordinate as (row, col).
         initial_heading: Trusted heading at the start node.
+        cancel_requested_fn: Optional callback returning True when navigation must stop.
+        node_reached_fn: Optional callback(node, heading) after reaching a trusted node.
+
+        Steps:
+        Check cancellation before each planning/execution phase, pass the same signal
+        into EdgeFollower, and publish each confirmed node after updating trusted state.
         """
         if initial_heading not in _HEADINGS:
             raise ValueError("initial_heading must be north/east/south/west")
@@ -92,8 +107,12 @@ class GridNavigator:
             f"nav start={_fmt_node(start)} end={_fmt_node(end)} "
             f"heading={initial_heading}"
         )
+        if self._cancel_requested(cancel_requested_fn):
+            return NAV_CANCELED
 
         while self.current_node != self.target_node:
+            if self._cancel_requested(cancel_requested_fn):
+                return NAV_CANCELED
             path = astar(
                 self.grid,
                 self.current_node,
@@ -122,6 +141,7 @@ class GridNavigator:
                 self.current_heading,
                 target_heading,
                 self.edge_max_seconds,
+                cancel_requested_fn=cancel_requested_fn,
             )
             edge_status = _result_status(edge_result)
             self._log(
@@ -130,6 +150,9 @@ class GridNavigator:
                 f"at={_fmt_node(self.current_node)}"
             )
 
+            if edge_status == EDGE_CANCELED:
+                return self._finish_canceled()
+
             if edge_status == EDGE_REACHED_NEXT_NODE:
                 self.current_node = next_node
                 self.current_heading = target_heading
@@ -137,6 +160,14 @@ class GridNavigator:
                     f"nav reached node={_fmt_node(self.current_node)} "
                     f"heading={self.current_heading}"
                 )
+                if node_reached_fn is not None:
+                    try:
+                        node_reached_fn(self.current_node, self.current_heading)
+                    except Exception:
+                        self.motor.brake()
+                        raise
+                if self._cancel_requested(cancel_requested_fn):
+                    return NAV_CANCELED
                 continue
 
             if edge_status == EDGE_BLOCKED_ON_PLANNED_EDGE:
@@ -149,12 +180,15 @@ class GridNavigator:
                 recovery_result = self.edge_follower.recover_to_start_node(
                     return_heading=return_heading,
                     max_seconds=self.recovery_max_seconds,
+                    cancel_requested_fn=cancel_requested_fn,
                 )
                 recovery_status = _result_status(recovery_result)
                 self._log(
                     f"nav recovery_result status={recovery_status} "
                     f"reason={getattr(recovery_result, 'reason', None)}"
                 )
+                if recovery_status == EDGE_CANCELED:
+                    return self._finish_canceled()
                 if recovery_status != EDGE_RECOVERED_TO_START_NODE:
                     self.motor.brake()
                     return NAV_FAILED
@@ -179,6 +213,34 @@ class GridNavigator:
         self.motor.brake()
         self._log(f"nav arrived at={_fmt_node(self.current_node)}")
         return NAV_ARRIVED
+
+    def _cancel_requested(self, cancel_requested_fn):
+        """Check external cancellation and brake before returning or raising.
+
+        Parameters:
+        cancel_requested_fn: Optional zero-argument callback returning a boolean.
+
+        Steps:
+        Treat a missing callback as active navigation. Brake when cancellation is
+        requested or when the callback itself raises.
+        """
+        if cancel_requested_fn is None:
+            return False
+        try:
+            requested = bool(cancel_requested_fn())
+        except Exception:
+            self.motor.brake()
+            raise
+        if requested:
+            self.motor.brake()
+            self._log(f"nav canceled at={_fmt_node(self.current_node)}")
+        return requested
+
+    def _finish_canceled(self):
+        """Brake and convert a lower-level canceled result into NAV_CANCELED."""
+        self.motor.brake()
+        self._log(f"nav canceled at={_fmt_node(self.current_node)}")
+        return NAV_CANCELED
 
     def _all_blocked_edges(self):
         return self.static_blocked_edges | self.dynamic_blocked_edges

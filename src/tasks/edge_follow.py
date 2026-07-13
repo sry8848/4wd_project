@@ -31,6 +31,9 @@ EDGE_LEAVE_NODE_FAILED = "leave_node_failed"
 EDGE_LINE_LOST = "line_lost"
 EDGE_TIMEOUT = "timeout"
 EDGE_RECOVERY_FAILED = "recovery_failed"
+EDGE_CANCELED = "canceled"
+
+_CANCEL_POLL_SECONDS = 0.02
 
 # Backward-compatible names for older callers/tests. New code should use the
 # explicit state names above.
@@ -247,35 +250,61 @@ class EdgeFollower:
         if self._debug is not None:
             self._debug(message)
 
-    def execute_planned_edge(self, current_heading, target_heading, max_seconds):
+    def execute_planned_edge(
+        self,
+        current_heading,
+        target_heading,
+        max_seconds,
+        cancel_requested_fn=None,
+    ):
         """Align to target_heading, leave the node, then travel the edge.
 
         Parameters:
         current_heading: Current trusted heading, or None to skip coarse align.
         target_heading: Heading of the planned edge, or None to keep heading.
         max_seconds: Whole-edge timeout including turn, leave, and travel.
+        cancel_requested_fn: Optional callback returning True when motion must stop.
+
+        Steps:
+        Check cancellation before and during align, node departure, and edge travel.
+        Every cancellation path brakes before returning EDGE_CANCELED.
         """
         if max_seconds <= 0:
             raise ValueError("max_seconds must be > 0")
+        if self._cancel_requested(cancel_requested_fn):
+            return EdgeExecutionResult(EDGE_CANCELED)
 
         deadline = self._time() + max_seconds
         self._log(
             f"edge_exec start current={current_heading} target={target_heading} "
             f"max_seconds={max_seconds}"
         )
-        if not self._align_to_heading(current_heading, target_heading, deadline):
+        if not self._align_to_heading(
+            current_heading,
+            target_heading,
+            deadline,
+            cancel_requested_fn,
+        ):
+            if self._cancel_requested(cancel_requested_fn):
+                return EdgeExecutionResult(EDGE_CANCELED)
             self.motor.brake()
             result = EdgeExecutionResult(EDGE_TURN_FAILED, reason=EDGE_TIMEOUT)
             self._log(f"edge_exec result status={result.status} reason={result.reason}")
             return result
 
-        if not self._leave_node(deadline):
+        if not self._leave_node(deadline, cancel_requested_fn):
+            if self._cancel_requested(cancel_requested_fn):
+                return EdgeExecutionResult(EDGE_CANCELED)
             self.motor.brake()
             result = EdgeExecutionResult(EDGE_LEAVE_NODE_FAILED, reason=EDGE_TIMEOUT)
             self._log(f"edge_exec result status={result.status} reason={result.reason}")
             return result
 
-        result = self._travel_edge(deadline, final_heading=target_heading)
+        result = self._travel_edge(
+            deadline,
+            final_heading=target_heading,
+            cancel_requested_fn=cancel_requested_fn,
+        )
         self._log(
             f"edge_exec result status={result.status} "
             f"reason={result.reason} final_heading={result.final_heading}"
@@ -291,7 +320,12 @@ class EdgeFollower:
         """
         return self.execute_planned_edge(None, None, max_seconds).status
 
-    def recover_to_start_node(self, return_heading=None, max_seconds=None):
+    def recover_to_start_node(
+        self,
+        return_heading=None,
+        max_seconds=None,
+        cancel_requested_fn=None,
+    ):
         """Reverse along the current edge back to the start node.
 
         Parameters:
@@ -299,6 +333,11 @@ class EdgeFollower:
             For backward compatibility, a numeric first argument is treated as
             max_seconds.
         max_seconds: Recovery timeout.
+        cancel_requested_fn: Optional callback returning True when motion must stop.
+
+        Steps:
+        Check cancellation before and during reverse recovery, brake on cancel, and
+        always stop the reverse radar before returning.
         """
         if max_seconds is None and isinstance(return_heading, (int, float)):
             max_seconds = return_heading
@@ -311,10 +350,18 @@ class EdgeFollower:
             f"recovery start return_heading={return_heading} max_seconds={max_seconds}"
         )
         try:
+            if self._cancel_requested(cancel_requested_fn):
+                return EdgeExecutionResult(
+                    EDGE_CANCELED,
+                    final_heading=return_heading,
+                )
             result = self._reverse_to_node_without_obstacle(
                 deadline,
                 final_heading=return_heading,
+                cancel_requested_fn=cancel_requested_fn,
             )
+            if result.status == EDGE_CANCELED:
+                return result
             if result.status == EDGE_RECOVERED_TO_START_NODE:
                 self._log(
                     f"recovery result status={result.status} "
@@ -334,8 +381,16 @@ class EdgeFollower:
             if self.reverse_radar is not None:
                 self.reverse_radar.stop()
 
-    def _align_to_heading(self, current_heading, target_heading, deadline):
+    def _align_to_heading(
+        self,
+        current_heading,
+        target_heading,
+        deadline,
+        cancel_requested_fn,
+    ):
         # Step 1: Coarse turn only. No ultrasonic, no node recognition here.
+        if self._cancel_requested(cancel_requested_fn):
+            return False
         if current_heading is None or target_heading is None:
             self._log("align skip (heading unknown)")
             return self._time() < deadline
@@ -354,38 +409,60 @@ class EdgeFollower:
                 f"align turn=right seconds={self.turn_rough_seconds} "
                 f"from={current_heading} to={target_heading}"
             )
-            return self._rough_turn(left=False, seconds=self.turn_rough_seconds, deadline=deadline)
+            return self._rough_turn(
+                left=False,
+                seconds=self.turn_rough_seconds,
+                deadline=deadline,
+                cancel_requested_fn=cancel_requested_fn,
+            )
         if diff == 2:
             self._log(
                 f"align turn=uturn_left seconds={self.uturn_rough_seconds} "
                 f"from={current_heading} to={target_heading}"
             )
-            return self._rough_turn(left=True, seconds=self.uturn_rough_seconds, deadline=deadline)
+            return self._rough_turn(
+                left=True,
+                seconds=self.uturn_rough_seconds,
+                deadline=deadline,
+                cancel_requested_fn=cancel_requested_fn,
+            )
         self._log(
             f"align turn=left seconds={self.turn_rough_seconds} "
             f"from={current_heading} to={target_heading}"
         )
-        return self._rough_turn(left=True, seconds=self.turn_rough_seconds, deadline=deadline)
+        return self._rough_turn(
+            left=True,
+            seconds=self.turn_rough_seconds,
+            deadline=deadline,
+            cancel_requested_fn=cancel_requested_fn,
+        )
 
-    def _rough_turn(self, left, seconds, deadline):
-        if self._time() >= deadline:
+    def _rough_turn(self, left, seconds, deadline, cancel_requested_fn):
+        if self._time() >= deadline or self._cancel_requested(cancel_requested_fn):
             return False
         if seconds > 0:
             if left:
                 self.motor.spin_left(self.turn_speed, self.turn_speed)
             else:
                 self.motor.spin_right(self.turn_speed, self.turn_speed)
-            self._sleep(seconds)
+            if not self._wait_while_active(
+                seconds,
+                deadline,
+                cancel_requested_fn,
+            ):
+                return False
         self.motor.brake()
         return self._time() < deadline
 
-    def _leave_node(self, deadline):
+    def _leave_node(self, deadline, cancel_requested_fn):
         # Step 2: Protected leave. Node readings cannot mean "next node" here.
         self._log("leave_node start")
         started_at = self._time()
         clear_count = 0
         last_summary = None
         while self._time() < deadline and self._time() - started_at <= self.line_acquire_timeout:
+            if self._cancel_requested(cancel_requested_fn):
+                return False
             reading = self.line_follower.sensor.read()
             result = self.line_follower.apply_reading(reading)
             summary = _reading_summary(result)
@@ -421,7 +498,12 @@ class EdgeFollower:
         )
         return False
 
-    def _travel_edge(self, deadline, final_heading=None):
+    def _travel_edge(
+        self,
+        deadline,
+        final_heading=None,
+        cancel_requested_fn=None,
+    ):
         # Step 3: Normal edge travel. This is the only dynamic-blocking phase.
         self._log("edge_travel start")
         self.obstacle_gate.start_edge()
@@ -431,6 +513,11 @@ class EdgeFollower:
         peak_node_count = 0
 
         while self._time() < deadline:
+            if self._cancel_requested(cancel_requested_fn):
+                return EdgeExecutionResult(
+                    EDGE_CANCELED,
+                    final_heading=final_heading,
+                )
             result = self.line_follower.step()
 
             if result.is_node:
@@ -448,7 +535,11 @@ class EdgeFollower:
                     )
                     last_summary = summary
                 if node_count >= self.node_confirm_samples:
-                    self._center_on_node()
+                    if not self._center_on_node(cancel_requested_fn):
+                        return EdgeExecutionResult(
+                            EDGE_CANCELED,
+                            final_heading=final_heading,
+                        )
                     return EdgeExecutionResult(
                         EDGE_REACHED_NEXT_NODE,
                         final_heading=final_heading,
@@ -491,7 +582,12 @@ class EdgeFollower:
         )
         return EdgeExecutionResult(EDGE_TIMEOUT, final_heading=final_heading)
 
-    def _reverse_to_node_without_obstacle(self, deadline, final_heading=None):
+    def _reverse_to_node_without_obstacle(
+        self,
+        deadline,
+        final_heading=None,
+        cancel_requested_fn=None,
+    ):
         # Step 4: Recovery travel by reversing. No obstacle can seal a new edge.
         self._log("reverse_recovery start")
         node_count = 0
@@ -500,6 +596,11 @@ class EdgeFollower:
         peak_node_count = 0
 
         while self._time() < deadline:
+            if self._cancel_requested(cancel_requested_fn):
+                return EdgeExecutionResult(
+                    EDGE_CANCELED,
+                    final_heading=final_heading,
+                )
             if self.reverse_radar is not None:
                 self.reverse_radar.tick()
 
@@ -521,7 +622,11 @@ class EdgeFollower:
                     )
                     last_summary = summary
                 if node_count >= self.node_confirm_samples:
-                    self._center_on_node()
+                    if not self._center_on_node(cancel_requested_fn):
+                        return EdgeExecutionResult(
+                            EDGE_CANCELED,
+                            final_heading=final_heading,
+                        )
                     return EdgeExecutionResult(
                         EDGE_RECOVERED_TO_START_NODE,
                         final_heading=final_heading,
@@ -584,14 +689,62 @@ class EdgeFollower:
             centered_line=is_centered_line(reading),
         )
 
-    def _center_on_node(self):
+    def _center_on_node(self, cancel_requested_fn):
         if self.node_center_seconds > 0:
             self.motor.forward(
                 self.line_follower.forward_speed,
                 self.line_follower.forward_speed,
             )
-            self._sleep(self.node_center_seconds)
+            if not self._wait_while_active(
+                self.node_center_seconds,
+                self._time() + self.node_center_seconds,
+                cancel_requested_fn,
+            ):
+                return False
         self.motor.brake()
+        return True
+
+    def _cancel_requested(self, cancel_requested_fn):
+        """Check one external cancellation callback and brake before returning.
+
+        Parameters:
+        cancel_requested_fn: Optional zero-argument callback returning a boolean.
+
+        Steps:
+        Treat a missing callback as active motion. If the callback raises or returns
+        True, brake before propagating the exception or reporting cancellation.
+        """
+        if cancel_requested_fn is None:
+            return False
+        try:
+            requested = bool(cancel_requested_fn())
+        except Exception:
+            self.motor.brake()
+            raise
+        if requested:
+            self.motor.brake()
+            self._log("motion canceled")
+        return requested
+
+    def _wait_while_active(self, seconds, deadline, cancel_requested_fn):
+        """Sleep in short intervals so powered motion can react to cancellation.
+
+        Parameters:
+        seconds: Requested motion duration.
+        deadline: Absolute phase deadline from the monotonic clock.
+        cancel_requested_fn: Optional cancellation callback.
+
+        Steps:
+        Limit the wait by the phase deadline, poll cancellation every 20 ms, and
+        return False on cancellation or timeout.
+        """
+        finish_at = min(self._time() + seconds, deadline)
+        while self._time() < finish_at:
+            if self._cancel_requested(cancel_requested_fn):
+                return False
+            remaining = finish_at - self._time()
+            self._sleep(min(_CANCEL_POLL_SECONDS, remaining))
+        return not self._cancel_requested(cancel_requested_fn) and self._time() <= deadline
 
     def _stable_tracking(self, result):
         return (

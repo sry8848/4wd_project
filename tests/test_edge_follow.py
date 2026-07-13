@@ -3,6 +3,7 @@ import unittest
 from src.hardware.line_sensor import LineReading
 from src.tasks.edge_follow import (
     EDGE_BLOCKED_ON_PLANNED_EDGE,
+    EDGE_CANCELED,
     EDGE_LEAVE_NODE_FAILED,
     EDGE_LINE_LOST,
     EDGE_REACHED_NEXT_NODE,
@@ -235,6 +236,38 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertEqual(self.obstacle_sensor.calls, 0)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
+    def test_execute_planned_edge_cancels_during_rough_turn(self):
+        follower = self.build_follower(
+            [LINE_READING, LINE_READING],
+            turn_rough_seconds=0.4,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_NORTH,
+            HEADING_EAST,
+            max_seconds=3,
+            cancel_requested_fn=lambda: self.clock.monotonic() >= 0.1,
+        )
+
+        self.assertEqual(result.status, EDGE_CANCELED)
+        self.assertLess(self.clock.monotonic(), 0.4)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_execute_planned_edge_cancels_during_edge_travel(self):
+        follower = self.build_follower(
+            [LINE_READING, LINE_READING, LINE_READING],
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_EAST,
+            HEADING_EAST,
+            max_seconds=3,
+            cancel_requested_fn=lambda: self.sensor.index >= 3,
+        )
+
+        self.assertEqual(result.status, EDGE_CANCELED)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
     def test_recover_to_start_node_reverses_without_turning_or_ultrasonic(self):
         follower = self.build_follower(
             [LINE_READING, NODE_READING, NODE_READING],
@@ -311,6 +344,23 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_RECOVERED_TO_START_NODE)
         self.assertGreaterEqual(radar.tick_calls, 1)
+        self.assertEqual(radar.stop_calls, 1)
+
+    def test_reverse_recovery_cancellation_stops_reverse_radar(self):
+        radar = FakeReverseRadar()
+        follower = self.build_follower(
+            [LINE_READING, LINE_READING],
+            reverse_radar=radar,
+        )
+
+        result = follower.recover_to_start_node(
+            return_heading=HEADING_EAST,
+            max_seconds=3,
+            cancel_requested_fn=lambda: self.sensor.index >= 1,
+        )
+
+        self.assertEqual(result.status, EDGE_CANCELED)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
         self.assertEqual(radar.stop_calls, 1)
 
     def test_debug_fn_logs_align_leave_and_result_phases(self):

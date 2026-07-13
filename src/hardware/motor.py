@@ -32,6 +32,14 @@ class MotorController:
                 raise RuntimeError("❌ RPi.GPIO 库只能在树莓派真机上运行！请在树莓派上执行此代码。") from exc
 
         self.gpio = gpio
+        self.pins = (
+            config.MOTOR_ENA,
+            config.MOTOR_IN1,
+            config.MOTOR_IN2,
+            config.MOTOR_ENB,
+            config.MOTOR_IN3,
+            config.MOTOR_IN4,
+        )
         # 这两个变量用来保存左右轮的“油门”（PWM调速器），先占个位置
         self._pwm_left = None
         self._pwm_right = None
@@ -136,8 +144,8 @@ class MotorController:
             # 停止 PWM 输出
             self._pwm_left.stop()
             self._pwm_right.stop()
-            # 让树莓派把所有用过的引脚恢复成安全的默认状态
-            self.gpio.cleanup()
+            # 只释放电机自己初始化的引脚，不能误伤巡线或超声波模块。
+            self.gpio.cleanup(self.pins)
 
     def _setup_gpio(self):
         """【幕后准备工作】初始化引脚。
