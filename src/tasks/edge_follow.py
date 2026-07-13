@@ -155,7 +155,8 @@ class EdgeFollower:
     uturn_rough_seconds: Calibrated left-spin 180-degree turn duration.
     leave_node_min_seconds: Minimum protected time before leaving can succeed.
     node_clear_samples: Consecutive non-node line samples required to leave.
-    node_confirm_samples: Consecutive node samples required to enter a node.
+    node_confirm_samples: Node samples required to enter a node; default 1 means
+        one matching reading is accepted immediately.
     node_center_seconds: Short forward push after confirming a node.
     obstacle_arm_delay: Delay before obstacle readings can block an edge.
     obstacle_clear_samples: Safe readings required before obstacle confirmation.
@@ -180,7 +181,7 @@ class EdgeFollower:
         uturn_rough_seconds=1.2,
         leave_node_min_seconds=0.25,
         node_clear_samples=3,
-        node_confirm_samples=3,
+        node_confirm_samples=1,
         node_center_seconds=0.08,
         obstacle_arm_delay=0.3,
         obstacle_clear_samples=1,

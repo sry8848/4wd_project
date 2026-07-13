@@ -355,13 +355,13 @@ RI = 1
 left_inner and right_inner and (left_outer or right_outer)
 ```
 
-但新版不能“一次 node=1 就到点”。必须满足：
+当前实车采用“一次 `node=1` 就到点”。必须满足：
 
 ```text
 已经完成出点
 已经处于 EDGE_TRAVEL
-不是找线状态
-连续 node_confirm_samples 次检测到节点
+传感器读数满足节点规则
+node_confirm_samples = 1，单次检测到节点即确认
 ```
 
 确认后可以轻推居中：
@@ -487,7 +487,7 @@ recovery_failed
 
 ```text
 node_clear_samples = 3
-node_confirm_samples = 3
+node_confirm_samples = 1
 node_center_seconds = 0.08
 obstacle_arm_delay = 0.3
 obstacle_clear_samples = 1
@@ -532,7 +532,7 @@ A1 -> A2
 - 连续 `node_clear_samples` 次非节点后才进入边中。
 - 找线阶段不封边。
 - 边中连续 `obstacle_confirm_samples` 次障碍才返回 `blocked_on_planned_edge`。
-- 一次节点读数不算入点，连续 `node_confirm_samples` 次才算。
+- 默认一次节点读数即算入点；可通过 `node_confirm_samples` 提高确认次数。
 - 恢复阶段直接倒车，不执行原地掉头。
 
 `GridNavigator`：
