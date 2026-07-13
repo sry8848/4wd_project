@@ -163,6 +163,8 @@ class EdgeFollowerTest(unittest.TestCase):
             self.motor,
             forward_speed=20,
             turn_speed=70,
+            left_turn_speed=80,
+            right_turn_speed=100,
             search_speed=8,
         )
         self.obstacle_sensor = FakeObstacleSensor(
@@ -197,10 +199,9 @@ class EdgeFollowerTest(unittest.TestCase):
             [
                 NODE_READING,
                 LINE_READING,
-                LINE_READING,
-                LINE_READING,
-                LINE_READING,
-                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
+                WHITE_READING,
             ],
             obstructed_values=[False, True],
         )
@@ -217,7 +218,7 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertGreaterEqual(self.obstacle_sensor.call_times[0], 0.3)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
-    def test_execute_planned_edge_requires_consecutive_non_node_samples_to_leave(self):
+    def test_execute_planned_edge_requires_consecutive_all_white_samples_to_leave(self):
         follower = self.build_follower(
             [NODE_READING, LINE_READING],
             default_reading=NODE_READING,
@@ -237,8 +238,8 @@ class EdgeFollowerTest(unittest.TestCase):
     def test_execute_planned_edge_requires_consecutive_node_samples_to_arrive(self):
         follower = self.build_follower(
             [
-                LINE_READING,
-                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
                 NODE_READING,
                 LINE_READING,
                 NODE_READING,
@@ -261,8 +262,8 @@ class EdgeFollowerTest(unittest.TestCase):
         clock = OvershootingClock()
         follower = self.build_follower(
             [
-                LINE_READING,
-                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
                 NODE_READING,
                 NODE_READING,
             ],
@@ -283,8 +284,8 @@ class EdgeFollowerTest(unittest.TestCase):
     def test_node_center_deadline_is_reported_as_timeout_not_cancellation(self):
         follower = self.build_follower(
             [
-                LINE_READING,
-                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
                 NODE_READING,
                 NODE_READING,
             ],
@@ -303,8 +304,6 @@ class EdgeFollowerTest(unittest.TestCase):
     def test_execute_planned_edge_reports_line_lost_without_sealing_edge(self):
         follower = self.build_follower(
             [
-                LINE_READING,
-                LINE_READING,
                 WHITE_READING,
                 WHITE_READING,
                 WHITE_READING,
@@ -322,11 +321,13 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_LINE_LOST)
         self.assertGreater(self.obstacle_sensor.calls, 0)
+        self.assertIn(("forward", 20, 20), self.motor.calls)
+        self.assertNotIn(("spin_left", 8, 8), self.motor.calls)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
-    def test_execute_planned_edge_stops_for_obstacle_while_searching_for_line(self):
+    def test_execute_planned_edge_stops_for_obstacle_during_all_white_travel(self):
         follower = self.build_follower(
-            [LINE_READING, LINE_READING, WHITE_READING],
+            [WHITE_READING, WHITE_READING, WHITE_READING],
             obstructed_values=[False, True],
             default_reading=WHITE_READING,
         )
@@ -338,11 +339,12 @@ class EdgeFollowerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, EDGE_BLOCKED_ON_PLANNED_EDGE)
+        self.assertIn(("forward", 20, 20), self.motor.calls)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
     def test_execute_planned_edge_ignores_obstacle_cache_from_before_edge(self):
         follower = self.build_follower(
-            [LINE_READING, LINE_READING, NODE_READING, NODE_READING],
+            [WHITE_READING, WHITE_READING, NODE_READING, NODE_READING],
             obstructed_values=[True, False, False],
         )
 
@@ -373,7 +375,7 @@ class EdgeFollowerTest(unittest.TestCase):
 
     def test_execute_planned_edge_cancels_during_edge_travel(self):
         follower = self.build_follower(
-            [LINE_READING, LINE_READING, LINE_READING],
+            [WHITE_READING, WHITE_READING, WHITE_READING],
         )
 
         result = follower.execute_planned_edge(
@@ -381,6 +383,22 @@ class EdgeFollowerTest(unittest.TestCase):
             HEADING_EAST,
             max_seconds=3,
             cancel_requested_fn=lambda: self.sensor.index >= 3,
+        )
+
+        self.assertEqual(result.status, EDGE_CANCELED)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_execute_planned_edge_cancels_during_node_departure(self):
+        follower = self.build_follower(
+            [WHITE_READING, WHITE_READING],
+            node_clear_samples=3,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_EAST,
+            HEADING_EAST,
+            max_seconds=3,
+            cancel_requested_fn=lambda: self.sensor.index >= 1,
         )
 
         self.assertEqual(result.status, EDGE_CANCELED)
@@ -509,8 +527,8 @@ class EdgeFollowerTest(unittest.TestCase):
         follower = self.build_follower(
             [
                 LINE_READING,
-                LINE_READING,
-                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
                 NODE_READING,
                 NODE_READING,
             ],
@@ -528,17 +546,19 @@ class EdgeFollowerTest(unittest.TestCase):
         joined = "\n".join(logs)
         self.assertIn("align turn=right seconds=0.5", joined)
         self.assertIn("turn_acquire success direction=right", joined)
-        self.assertIn("leave_node start", joined)
+        self.assertIn("leave_node start motion=right_arc speed=20", joined)
         self.assertIn("edge_travel start", joined)
         self.assertIn("edge_exec result status=reached_next_node", joined)
+        self.assertIn(("right", 20, 0), self.motor.calls)
+        self.assertNotIn(("right", 100, 0), self.motor.calls)
 
     def test_left_turn_uses_independent_calibrated_duration(self):
         logs = []
         follower = self.build_follower(
             [
                 LINE_READING,
-                LINE_READING,
-                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
                 NODE_READING,
                 NODE_READING,
             ],
@@ -554,6 +574,30 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
         self.assertIn("align turn=left seconds=0.6", "\n".join(logs))
+        self.assertIn(("left", 0, 20), self.motor.calls)
+        self.assertNotIn(("left", 0, 80), self.motor.calls)
+
+    def test_uturn_leaves_node_with_low_speed_left_arc(self):
+        follower = self.build_follower(
+            [
+                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_EAST,
+            HEADING_WEST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+        self.assertIn(("spin_left", 30, 30), self.motor.calls)
+        self.assertIn(("left", 0, 20), self.motor.calls)
+        self.assertNotIn(("left", 0, 80), self.motor.calls)
 
     def test_right_turn_fine_search_keeps_turning_right_until_line(self):
         follower = self.build_follower(
@@ -562,8 +606,8 @@ class EdgeFollowerTest(unittest.TestCase):
                 WHITE_READING,
                 LINE_READING,
                 WHITE_READING,
-                LINE_READING,
-                LINE_READING,
+                WHITE_READING,
+                WHITE_READING,
                 NODE_READING,
                 NODE_READING,
             ],
@@ -578,6 +622,8 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
         self.assertIn(("spin_right", 8, 8), self.motor.calls)
         self.assertNotIn(("spin_left", 8, 8), self.motor.calls)
+        self.assertIn(("right", 20, 0), self.motor.calls)
+        self.assertNotIn(("right", 100, 0), self.motor.calls)
 
     def test_turn_fine_search_timeout_brakes_instead_of_reaching_opposite_line(self):
         follower = self.build_follower(

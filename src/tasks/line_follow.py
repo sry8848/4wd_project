@@ -20,7 +20,8 @@ class LineStepResult:
     action: 根据读数决定并已执行的电机动作。
     is_node: 本次读数是否满足网格节点判断。
     line_seen: 四路传感器是否至少一路看到黑线。
-    centered_line: 内侧两路是否同时看到黑线，用于判断是否基本压在线上。
+    centered_line: 内侧两路是否同时看到黑线；当前实车普通边居中主要为全白，
+        该字段只描述这一种传感器形态，不作为走边居中的唯一依据。
     """
 
     reading: object
@@ -58,10 +59,13 @@ def is_line_seen(reading):
 
 
 def is_centered_line(reading):
-    """判断车身是否大致压在普通线中心。
+    """判断内侧两路传感器是否同时看到黑线。
 
     参数说明：
     reading: src.hardware.line_sensor.LineReading 实例。
+
+    当前实车普通边居中主要为全白；此函数保留给转向找线识别内侧双黑，
+    不能单独作为走边居中的定义。
     """
     return reading.left_inner and reading.right_inner
 
@@ -133,23 +137,37 @@ class LineFollower:
         self.search_speed = search_speed
         self.debug_output = debug_output
 
-    def step(self):
+    def step(self, forward_on_no_line=False):
         """执行一次“读取传感器 -> 判断动作 -> 控制电机”的循迹步骤。
+
+        参数说明：
+        forward_on_no_line: 四路全白时是否直行；仅用于已进入普通边的状态。
 
         返回值：
         LineStepResult，包含本次读数、动作和节点/线状态。
         """
         reading = self.sensor.read()
-        return self.apply_reading(reading)
+        return self.apply_reading(
+            reading,
+            forward_on_no_line=forward_on_no_line,
+        )
 
-    def apply_reading(self, reading, search_left=True):
+    def apply_reading(
+        self,
+        reading,
+        search_left=True,
+        forward_on_no_line=False,
+    ):
         """根据已读取的传感器结果执行一次巡线动作。
 
         参数说明：
         reading: src.hardware.line_sensor.LineReading 实例。
         search_left: 四路全白时是否向左找线；False 表示向右找线。
+        forward_on_no_line: 四路全白时是否改为直行，优先于 search_left。
         """
         action = decide_line_action(reading)
+        if action == ACTION_SEARCH_LEFT and forward_on_no_line:
+            action = ACTION_FORWARD
 
         if action == ACTION_NODE:
             self.motor.brake()

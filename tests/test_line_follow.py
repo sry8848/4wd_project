@@ -223,6 +223,17 @@ class LineFollowerTest(unittest.TestCase):
         self.assertEqual(result.action, ACTION_SEARCH_LEFT)
         self.assertEqual(motor.calls, [("spin_left", 6, 6)])
 
+    def test_step_can_drive_forward_on_all_white_in_edge_context(self):
+        sensor = FakeSensor([LineReading(False, False, False, False)])
+        motor = FakeMotor()
+        follower = LineFollower(sensor, motor, forward_speed=20, search_speed=6)
+
+        result = follower.step(forward_on_no_line=True)
+
+        self.assertEqual(result.action, ACTION_FORWARD)
+        self.assertFalse(result.line_seen)
+        self.assertEqual(motor.calls, [("forward", 20, 20)])
+
     def test_apply_reading_can_search_right_when_turn_context_requires_it(self):
         sensor = FakeSensor([])
         motor = FakeMotor()

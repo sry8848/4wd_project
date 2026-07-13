@@ -261,7 +261,7 @@ class EdgeFollower:
             f"edge_exec start current={current_heading} target={target_heading} "
             f"max_seconds={max_seconds}"
         )
-        aligned, turn_search_left = self._align_to_heading(
+        aligned, turn_left = self._align_to_heading(
             current_heading,
             target_heading,
             deadline,
@@ -278,7 +278,7 @@ class EdgeFollower:
         if not self._leave_node(
             deadline,
             cancel_requested_fn,
-            search_left=turn_search_left,
+            turn_left=turn_left,
         ):
             if self._cancel_requested(cancel_requested_fn):
                 return EdgeExecutionResult(EDGE_CANCELED)
@@ -520,16 +520,30 @@ class EdgeFollower:
         )
         return False
 
-    def _leave_node(self, deadline, cancel_requested_fn, search_left=None):
-        """Leave the current node while preserving the planned search direction.
+    def _leave_node(self, deadline, cancel_requested_fn, turn_left=None):
+        """Leave the current node with bounded straight or arc motion.
 
         Parameters:
         deadline: Absolute deadline of the whole edge operation.
         cancel_requested_fn: Optional callback returning True when motion must stop.
-        search_left: Turn direction for all-white recovery; None keeps left search.
+        turn_left: True for a left arc, False for a right arc, None for straight.
+
+        Steps:
+        Reuse forward_speed for low-speed departure, never normal 80/100 line
+        correction. After the minimum travel time, consecutive all-white readings
+        confirm that the node or acquired turn line is between the sensors.
         """
         # Step 2: Protected leave. Node readings cannot mean "next node" here.
-        self._log("leave_node start")
+        if turn_left is None:
+            motion = "forward"
+        elif turn_left:
+            motion = "left_arc"
+        else:
+            motion = "right_arc"
+        self._log(
+            f"leave_node start motion={motion} speed="
+            f"{self.line_follower.forward_speed}"
+        )
         started_at = self._time()
         clear_count = 0
         last_summary = None
@@ -537,24 +551,34 @@ class EdgeFollower:
             if self._cancel_requested(cancel_requested_fn):
                 return False
             reading = self.line_follower.sensor.read()
-            result = self.line_follower.apply_reading(
-                reading,
-                search_left=search_left is not False,
+            line_seen = is_line_seen(reading)
+            result = LineStepResult(
+                reading=reading,
+                action=decide_line_action(reading),
+                is_node=is_at_node(reading),
+                line_seen=line_seen,
+                centered_line=is_centered_line(reading),
             )
-            summary = _reading_summary(result)
-            if summary != last_summary:
-                self._log(
-                    f"leave_node {summary} clear={clear_count}/{self.node_clear_samples}"
-                )
-                last_summary = summary
 
-            if result.is_node:
-                clear_count = 0
+            if turn_left is None:
                 self.motor.forward(
                     self.line_follower.forward_speed,
                     self.line_follower.forward_speed,
                 )
-            elif result.line_seen:
+            elif turn_left:
+                self.motor.left(0, self.line_follower.forward_speed)
+            else:
+                self.motor.right(self.line_follower.forward_speed, 0)
+
+            summary = _reading_summary(result)
+            if summary != last_summary:
+                self._log(
+                    f"leave_node {summary} motion={motion} "
+                    f"clear={clear_count}/{self.node_clear_samples}"
+                )
+                last_summary = summary
+
+            if not line_seen:
                 clear_count += 1
             else:
                 clear_count = 0
@@ -594,7 +618,7 @@ class EdgeFollower:
                     EDGE_CANCELED,
                     final_heading=final_heading,
                 )
-            result = self.line_follower.step()
+            result = self.line_follower.step(forward_on_no_line=True)
 
             if result.is_node:
                 node_count += 1
