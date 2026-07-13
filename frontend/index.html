@@ -143,13 +143,13 @@
         <div class="mail-card">
           <p class="kicker">Mail status</p>
           <h1>查看邮箱</h1>
-          <p class="muted">后期小车到达终点后，会通过树莓派后端向指定邮箱发送到达邮件。当前页面先展示邮件功能入口和模拟记录。</p>
+          <p class="muted">展示后端记录的最近一次到达邮件状态；真实邮件将在树莓派完成邮箱配置后启用。</p>
           <div class="mail-preview">
             <span>最近邮件</span>
             <strong id="mailSubject">暂无真实邮件</strong>
-            <p id="mailBody">完成行程后，前端会写入一条模拟邮件状态；真实发送逻辑可接入 `src/services/mail_sender.py`。</p>
+            <p id="mailBody">完成行程后，后端会记录最近一次到达邮件状态。</p>
           </div>
-          <button class="primary-button" id="simulateMailButton" type="button">模拟到达邮件</button>
+          <button class="primary-button" id="refreshMailButton" type="button">刷新邮件状态</button>
         </div>
       </section>
     </main>
