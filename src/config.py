@@ -43,7 +43,7 @@ ULTRASONIC_THRESHOLD = 20
 ULTRASONIC_SAMPLES = 3
 
 # 蜂鸣器引脚：BCM 8。
-# 注意：此引脚与按键(key=8)共用同一 GPIO，有源蜂鸣器，HIGH 发声。
+# 注意：此引脚与按键(key=8)共用同一 GPIO，有源蜂鸣器，LOW 发声、HIGH 静音。
 BUZZER_PIN = 8
 
 # 舵机引脚：ServoPin = 23 来自 Yahboom 官方示例”servo_ultrasonic_avoid.py”。

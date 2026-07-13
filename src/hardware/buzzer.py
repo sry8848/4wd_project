@@ -7,9 +7,9 @@ This layer only answers *how* to make a sound — it does not decide
 combine ``Buzzer`` with sensors to implement scenario logic.
 
 The buzzer shares BCM pin 8 with the on-board key button (common on
-Yahboom cars).  Setting the pin HIGH drives the buzzer; the button
-pulls it LOW.  This is safe as long as you do not read the pin as an
-input at the same time.
+Yahboom cars).  It is active-low: LOW sounds the buzzer and HIGH keeps
+it silent.  Do not read the same pin as a button input while driving
+the buzzer.
 
 Usage::
 
@@ -51,19 +51,19 @@ class Buzzer:
 
         self._gpio.setmode(self._gpio.BCM)
         self._gpio.setwarnings(False)
-        self._gpio.setup(self._pin, self._gpio.OUT, initial=self._gpio.LOW)
+        self._gpio.setup(self._pin, self._gpio.OUT, initial=self._gpio.HIGH)
 
     # ------------------------------------------------------------------
     #  Low-level helpers
     # ------------------------------------------------------------------
 
     def on(self):
-        """Turn the buzzer on (set pin HIGH)."""
-        self._gpio.output(self._pin, self._gpio.HIGH)
+        """Turn the active-low buzzer on."""
+        self._gpio.output(self._pin, self._gpio.LOW)
 
     def off(self):
-        """Turn the buzzer off (set pin LOW)."""
-        self._gpio.output(self._pin, self._gpio.LOW)
+        """Turn the active-low buzzer off."""
+        self._gpio.output(self._pin, self._gpio.HIGH)
 
     # ------------------------------------------------------------------
     #  Basic beep patterns
