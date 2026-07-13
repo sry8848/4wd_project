@@ -7,6 +7,15 @@
 3. 实车模式只能启动一个 Uvicorn worker，禁止使用 `--reload`。
 4. 保持终端可操作；异常时先按 `Ctrl+C`，应用关闭流程会取消行程、刹车并释放 GPIO。
 
+树莓派当前使用 Python 3.7，必须安装仓库锁定的兼容依赖，不能直接安装最新版：
+
+```bash
+python3 -m pip install --user -r requirements-rpi.txt
+python3 -c "import fastapi, uvicorn; print(fastapi.__version__, uvicorn.__version__)"
+```
+
+预期版本为 FastAPI `0.103.2`、Uvicorn `0.21.1`。
+
 ## 2. 启动实车模式
 
 下面示例表示小车实际位于 `A1`，车头朝东：
