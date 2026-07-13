@@ -35,6 +35,12 @@ class FakeClock:
         self.now += seconds
 
 
+class OvershootingClock(FakeClock):
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds + 0.001
+
+
 class FakeSensor:
     def __init__(self, readings, default=LINE_READING):
         self.readings = list(readings)
@@ -211,6 +217,29 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
         self.assertEqual(self.sensor.index, 6)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_node_center_sleep_overshoot_is_not_treated_as_cancellation(self):
+        clock = OvershootingClock()
+        follower = self.build_follower(
+            [
+                LINE_READING,
+                LINE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+            node_center_seconds=0.08,
+            time_fn=clock.monotonic,
+            sleep_fn=clock.sleep,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_EAST,
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
     def test_execute_planned_edge_reports_line_lost_without_sealing_edge(self):

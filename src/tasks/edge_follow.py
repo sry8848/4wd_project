@@ -741,13 +741,18 @@ class EdgeFollower:
         Limit the wait by the phase deadline, poll cancellation every 20 ms, and
         return False on cancellation or timeout.
         """
-        finish_at = min(self._time() + seconds, deadline)
+        requested_finish_at = self._time() + seconds
+        finish_at = min(requested_finish_at, deadline)
         while self._time() < finish_at:
             if self._cancel_requested(cancel_requested_fn):
                 return False
             remaining = finish_at - self._time()
             self._sleep(min(_CANCEL_POLL_SECONDS, remaining))
-        return not self._cancel_requested(cancel_requested_fn) and self._time() <= deadline
+        if self._cancel_requested(cancel_requested_fn):
+            return False
+        # Real sleep commonly wakes slightly after finish_at. Only a deadline that
+        # truncated the requested motion is a timeout; scheduler overshoot is not.
+        return requested_finish_at <= deadline
 
     def _stable_tracking(self, result):
         return (
