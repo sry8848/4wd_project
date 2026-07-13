@@ -237,6 +237,23 @@ function setRideRunning(isRunning) {
   }
 }
 
+/**
+ * 将取消按钮切换为等待前方节点停车的只读状态。
+ * 参数说明：无。
+ * 分步逻辑：禁用重复取消，再明确提示小车仍在完成当前边。
+ */
+function setCancelingState() {
+  resetButton.disabled = true;
+  const icon = document.createElement("span");
+  icon.className = "button-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "…";
+  resetButton.replaceChildren(
+    icon,
+    document.createTextNode("等待节点停车")
+  );
+}
+
 function renderWaypoints() {
   waypointList.innerHTML = "";
 
@@ -479,8 +496,13 @@ function renderRide(ride) {
   renderRouteTitle(routeStops, ride.progress);
   paintRoute(ride.start, ride.end, ride.progress, ride.route);
   setRideRunning(!isTerminal);
+  if (ride.status === "canceling") {
+    setCancelingState();
+  }
   setCallButtonLabel(
-    isTerminal ? (ride.status === "arrived" ? "再次叫车" : "重新叫车") : "行程进行中"
+    isTerminal
+      ? (ride.status === "arrived" ? "再次叫车" : "重新叫车")
+      : (ride.status === "canceling" ? "取消中" : "行程进行中")
   );
   return isTerminal;
 }
@@ -770,7 +792,7 @@ resetButton.addEventListener("click", async () => {
   const rideId = activeRideId;
   stopPolling();
   resetButton.disabled = true;
-  showCurrentMessage("系统", "正在取消行程");
+  showCurrentMessage("系统", "取消请求发送中，小车将继续到前方下一个节点停车");
   try {
     await requestJson(`/api/rides/${rideId}/cancel`, { method: "POST" });
     await pollRide();

@@ -64,7 +64,7 @@ E5 -> (4, 4)
 5. 持续保存当前行程状态、当前位置和消息。
 6. 到达终点后调用邮件服务发送到达通知。
 7. 为前端提供状态查询接口。
-8. 任何失败、取消或急停都必须先停车。
+8. 普通取消在前方下一可信节点停车；失败或急停必须立即进入安全停车。
 
 ### 2.2 非目标
 
@@ -180,7 +180,7 @@ heading = north/east/south/west 之一
 
 以下场景必须触发停车：
 
-- 行程取消。
+- 行程取消到达前方下一可信节点。
 - 急停接口被调用。
 - 导航返回失败。
 - 路径规划无路可走。
@@ -255,6 +255,7 @@ heading = north/east/south/west 之一
 | `to_pickup` | 小车正在前往起点 |
 | `arrived_pickup` | 小车已到达起点 |
 | `in_trip` | 小车正在从起点前往终点 |
+| `canceling` | 已收到取消请求，正在驶向前方下一个可信节点 |
 | `arrived` | 小车已到达终点 |
 | `failed` | 行程失败，小车应已停车 |
 | `canceled` | 行程被取消，小车应已停车 |
@@ -546,9 +547,9 @@ POST /api/rides/{ride_id}/cancel
 ```json
 {
   "id": "ride-20260709-153000",
-  "status": "canceled",
+  "status": "canceling",
   "current_position": "B3",
-  "message": "行程已取消，小车已停车"
+  "message": "取消请求已收到，小车将在前方下一个节点停车"
 }
 ```
 
@@ -556,7 +557,9 @@ POST /api/rides/{ride_id}/cancel
 
 - 只能取消活动行程。
 - 已 `arrived`、`failed` 或 `canceled` 的行程重复取消应返回 `409 conflict`。
-- 取消时必须停车。
+- 接口先返回 `canceling`，行程保持活动，前端继续轮询。
+- 小车不得回到已走过的节点；完成当前前向边并确认下一节点后停车，再把状态更新为 `canceled`。
+- 障碍、循迹失败和急停属于安全例外，可以优先停止或执行安全回退。
 
 ### 6.10 查询行程消息
 
@@ -763,9 +766,12 @@ GridNavigator.navigate() returns no_path/failed
 ```text
 POST /api/rides/{ride_id}/cancel
 -> mark cancellation requested
+-> ride.status = canceling
+-> finish current forward edge
+-> confirm and report the next trusted node
 -> motor.brake()
 -> ride.status = canceled
--> car.mode = idle or error, depending on hardware state
+-> car.mode = idle
 -> append cancel message
 ```
 
@@ -801,7 +807,7 @@ POST /api/ai/analyze-photo
 4. 有活动行程时再次创建行程返回 `409`。
 5. 无效点位返回 `400 invalid_point`。
 6. 前端能根据轮询结果更新小车位置、路径进度和消息列表。
-7. 行程取消或急停会调用停车逻辑。
+7. 行程取消会在前方下一可信节点停车，急停会立即调用停车逻辑。
 8. 到达终点后记录最近邮件状态。
 9. 邮件配置缺失不会导致小车运动失败。
 10. 任何导航失败都会停车并把行程标记为 `failed`。

@@ -264,6 +264,30 @@ class GridNavigatorTest(unittest.TestCase):
         self.assertEqual(len(self.edge_follower.execute_calls), 1)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
+    def test_graceful_cancel_reaches_next_forward_node_before_stopping(self):
+        navigator = self.build_navigator(
+            [["A", "A", "A"]],
+            [EDGE_REACHED_NEXT_NODE, EDGE_REACHED_NEXT_NODE],
+        )
+        reached_nodes = []
+
+        result = navigator.navigate(
+            (0, 0),
+            (0, 2),
+            HEADING_EAST,
+            stop_at_next_node_fn=lambda: True,
+            node_reached_fn=lambda node, heading: reached_nodes.append((node, heading)),
+        )
+
+        self.assertEqual(result, NAV_CANCELED)
+        self.assertEqual(reached_nodes, [((0, 1), HEADING_EAST)])
+        self.assertEqual(navigator.current_node, (0, 1))
+        self.assertEqual(
+            self.edge_follower.execute_calls,
+            [(HEADING_EAST, HEADING_EAST, 5)],
+        )
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
 
 if __name__ == "__main__":
     unittest.main()

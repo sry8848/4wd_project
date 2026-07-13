@@ -1,17 +1,18 @@
 """Ride orchestration service for the HTTP backend.
 
-This module intentionally avoids web framework and GPIO dependencies. It can
-run the local fake route or orchestrate an injected GridNavigator.
+This module intentionally avoids web framework and GPIO dependencies. It
+orchestrates an injected GridNavigator and records trusted-node progress.
 """
 
 from __future__ import annotations
 
-import time
+from threading import RLock
 from typing import Callable, List, Optional
 
 from src.server.point_codec import coord_to_point, point_to_coord
 from src.server.runtime_state import (
     RIDE_STATUS_ARRIVED,
+    RIDE_STATUS_CANCELING,
     RIDE_STATUS_CANCELED,
     RIDE_STATUS_FAILED,
     RuntimeState,
@@ -36,38 +37,37 @@ MAIL_STATUS_FAILED = "failed"
 
 
 class RideService:
-    """编排叫车行程状态以及假导航或注入的真实导航器。
+    """编排叫车行程状态以及注入的真实导航器。
 
     参数说明：
     state: RuntimeState 实例，保存小车状态、行程、消息和邮件状态。
     send_mail_fn: 可选邮件发送函数，签名为 (subject, body)。
-    sleep_fn: 等待函数，假导航延迟使用；默认 time.sleep。
     """
 
     def __init__(
         self,
         state: RuntimeState,
         send_mail_fn: Optional[Callable[[str, str], None]] = None,
-        sleep_fn: Callable[[float], None] = time.sleep,
     ):
         self.state = state
         self.send_mail_fn = send_mail_fn
-        self._sleep = sleep_fn
+        self._state_lock = RLock()
+        self._cancel_reasons = {}
 
     def submit_ride(self, request: RideCreateRequest) -> RideStatusResponse:
-        """创建行程并生成假导航路线，不立即执行完整行程。
+        """创建真实硬件行程并生成前端展示路线。
 
         参数说明：
         request: 已通过 RideCreateRequest 校验的叫车请求。
 
         分步逻辑：
         1. 读取当前可信小车位置。
-        2. 创建活动行程并生成展示路线。
+        2. 创建活动行程并生成初始展示路线。
         3. 记录收到叫车请求的行程消息。
         """
         car_status = self.state.get_car_status()
         ride = self.state.create_ride(request)
-        route = build_fake_route(
+        route = build_display_route(
             car_status.current_position,
             [ride.start, *ride.waypoints, ride.end],
         )
@@ -83,77 +83,6 @@ class RideService:
             f"收到叫车请求，当前上报位置 {car_status.current_position}",
         )
         return self.state.get_ride(ride.id)
-
-    def run_fake_ride(self, ride_id: str, step_delay_seconds: float = 0.0):
-        """按假路线逐点推进一个活动行程。
-
-        参数说明：
-        ride_id: submit_ride() 返回的行程 ID。
-        step_delay_seconds: 每个点位之间的模拟等待时间，默认不等待。
-
-        分步逻辑：
-        1. 读取行程路线，缺失时按网格点补生成。
-        2. 每个点推进前后都确认行程仍是活动行程。
-        3. 按到起点、行驶中、到终点分别更新状态和消息。
-        """
-        try:
-            ride = self.state.get_ride(ride_id)
-            if not self._is_active_ride(ride_id):
-                return ride
-
-            route = ride.route or build_fake_route(
-                ride.current_position,
-                [ride.start, *ride.waypoints, ride.end],
-            )
-            if not route:
-                raise RuntimeStateError(
-                    "empty_route",
-                    "行程路线不能为空",
-                    "route",
-                )
-
-            pickup_arrived = ride.status in (
-                RIDE_STATUS_ARRIVED_PICKUP,
-                RIDE_STATUS_IN_TRIP,
-            )
-            if ride.current_position == ride.start and not pickup_arrived:
-                self._mark_pickup_arrived(ride_id, ride.start, [ride.start])
-                pickup_arrived = True
-
-            for index, point in enumerate(route[1:], start=1):
-                if not self._is_active_ride(ride_id):
-                    return self.state.get_ride(ride_id)
-
-                if step_delay_seconds > 0:
-                    self._sleep(step_delay_seconds)
-                    if not self._is_active_ride(ride_id):
-                        return self.state.get_ride(ride_id)
-
-                progress = route[: index + 1]
-                if point == ride.start and not pickup_arrived:
-                    self._mark_pickup_arrived(ride_id, ride.start, progress)
-                    pickup_arrived = True
-                    continue
-
-                if point == ride.end and index == len(route) - 1:
-                    return self._finish_arrived(ride_id, ride.end, progress)
-
-                status = RIDE_STATUS_IN_TRIP if pickup_arrived else RIDE_STATUS_TO_PICKUP
-                message = f"当前位置 {point}"
-                self.state.update_ride(
-                    ride_id,
-                    status=status,
-                    current_position=point,
-                    progress=progress,
-                    eta_text=message,
-                )
-                self.state.append_ride_event(ride_id, "car", message)
-
-            return self.state.get_ride(ride_id)
-        except Exception as exc:
-            if not self._is_active_ride(ride_id):
-                return self.state.get_ride(ride_id)
-            return self._mark_failed(ride_id, exc)
 
     def run_hardware_ride(self, ride_id: str, navigator):
         """使用已创建的 GridNavigator 执行真实分段行程。
@@ -191,32 +120,37 @@ class RideService:
                 remaining_stops = stops[stop_index:]
 
                 def report_node(node, heading):
-                    if not self._is_active_ride(ride_id):
-                        return
-                    point = coord_to_point(node)
-                    current_ride = self.state.get_ride(ride_id)
-                    progress = list(current_ride.progress)
-                    if not progress or progress[-1] != point:
-                        progress.append(point)
-                    preview = build_fake_route(point, remaining_stops)
-                    route = [*progress, *preview[1:]]
-                    status = (
-                        RIDE_STATUS_IN_TRIP
-                        if current_ride.status
-                        in (RIDE_STATUS_ARRIVED_PICKUP, RIDE_STATUS_IN_TRIP)
-                        else RIDE_STATUS_TO_PICKUP
-                    )
-                    message = f"当前位置 {point}"
-                    self.state.update_ride(
-                        ride_id,
-                        status=status,
-                        current_position=point,
-                        heading=heading,
-                        route=route,
-                        progress=progress,
-                        eta_text=message,
-                    )
-                    self.state.append_ride_event(ride_id, "car", message)
+                    with self._state_lock:
+                        if not self._is_active_ride(ride_id):
+                            return
+                        point = coord_to_point(node)
+                        current_ride = self.state.get_ride(ride_id)
+                        progress = list(current_ride.progress)
+                        if not progress or progress[-1] != point:
+                            progress.append(point)
+                        preview = build_display_route(point, remaining_stops)
+                        route = [*progress, *preview[1:]]
+                        if self._is_cancel_requested(ride_id):
+                            status = RIDE_STATUS_CANCELING
+                            message = f"已到达前方节点 {point}，正在停车"
+                        else:
+                            status = (
+                                RIDE_STATUS_IN_TRIP
+                                if current_ride.status
+                                in (RIDE_STATUS_ARRIVED_PICKUP, RIDE_STATUS_IN_TRIP)
+                                else RIDE_STATUS_TO_PICKUP
+                            )
+                            message = f"当前位置 {point}"
+                        self.state.update_ride(
+                            ride_id,
+                            status=status,
+                            current_position=point,
+                            heading=heading,
+                            route=route,
+                            progress=progress,
+                            eta_text=message,
+                        )
+                        self.state.append_ride_event(ride_id, "car", message)
 
                 result = navigator.navigate(
                     point_to_coord(car_status.current_position),
@@ -224,38 +158,43 @@ class RideService:
                     car_status.heading,
                     cancel_requested_fn=lambda: not self._is_active_ride(ride_id),
                     node_reached_fn=report_node,
+                    stop_at_next_node_fn=lambda: self._is_cancel_requested(ride_id),
                 )
-                if result == NAV_CANCELED:
-                    return self.state.get_ride(ride_id)
-                if result == NAV_NO_PATH:
-                    raise RuntimeError(f"无法规划到点位 {stop} 的路线")
-                if result == NAV_FAILED:
-                    raise RuntimeError(f"导航到点位 {stop} 时硬件执行失败")
-                if result != NAV_ARRIVED:
-                    raise RuntimeError(f"未知导航结果: {result}")
+                with self._state_lock:
+                    if self._is_cancel_requested(ride_id):
+                        return self._finish_canceled_at_node(ride_id)
+                    if result == NAV_CANCELED:
+                        return self.state.get_ride(ride_id)
+                    if result == NAV_NO_PATH:
+                        raise RuntimeError(f"无法规划到点位 {stop} 的路线")
+                    if result == NAV_FAILED:
+                        raise RuntimeError(f"导航到点位 {stop} 时硬件执行失败")
+                    if result != NAV_ARRIVED:
+                        raise RuntimeError(f"未知导航结果: {result}")
 
-                current_ride = self.state.get_ride(ride_id)
-                if stop_index == 0:
-                    self._mark_pickup_arrived(
-                        ride_id,
-                        ride.start,
-                        list(current_ride.progress),
-                    )
-                elif stop == ride.end:
-                    return self._finish_arrived(
-                        ride_id,
-                        ride.end,
-                        list(current_ride.progress),
-                    )
+                    current_ride = self.state.get_ride(ride_id)
+                    if stop_index == 0:
+                        self._mark_pickup_arrived(
+                            ride_id,
+                            ride.start,
+                            list(current_ride.progress),
+                        )
+                    elif stop == ride.end:
+                        return self._finish_arrived(
+                            ride_id,
+                            ride.end,
+                            list(current_ride.progress),
+                        )
 
             return self.state.get_ride(ride_id)
         except Exception as exc:
-            if not self._is_active_ride(ride_id):
-                return self.state.get_ride(ride_id)
-            return self._mark_failed(ride_id, exc)
+            with self._state_lock:
+                if not self._is_active_ride(ride_id):
+                    return self.state.get_ride(ride_id)
+                return self._mark_failed(ride_id, exc)
 
-    def cancel_ride(self, ride_id: str, reason: str = "passenger_cancel"):
-        """取消活动行程并让当前导航执行停止后续推进。
+    def request_cancel_ride(self, ride_id: str, reason: str = "passenger_cancel"):
+        """请求活动行程在前方下一个可信节点停车。
 
         参数说明：
         ride_id: 活动行程 ID。
@@ -263,39 +202,98 @@ class RideService:
 
         分步逻辑：
         1. 确认要取消的是当前活动行程。
-        2. 将行程标记为 canceled 并记录取消消息。
+        2. 保持行程活动，将状态标记为 canceling。
+        3. 当前边继续执行，由 GridNavigator 到达前方节点后完成取消。
         """
-        active_ride = self.state.get_active_ride()
-        if active_ride is None or active_ride.id != ride_id:
-            raise RuntimeStateError(
-                "ride_not_active",
-                "只能取消当前活动行程",
-                "ride_id",
-            )
+        with self._state_lock:
+            active_ride = self.state.get_active_ride()
+            if active_ride is None or active_ride.id != ride_id:
+                raise RuntimeStateError(
+                    "ride_not_active",
+                    "只能取消当前活动行程",
+                    "ride_id",
+                )
 
-        message = "行程已取消，小车已停车"
-        ride = self.state.finish_ride(
-            ride_id,
-            status=RIDE_STATUS_CANCELED,
-            current_position=active_ride.current_position,
-            eta_text=message,
-            error_message=reason,
-        )
-        self.state.append_ride_event(ride_id, "system", message)
-        return ride
+            if ride_id in self._cancel_reasons:
+                return active_ride
+
+            self._cancel_reasons[ride_id] = reason
+            message = "取消请求已收到，小车将在前方下一个节点停车"
+            ride = self.state.update_ride(
+                ride_id,
+                status=RIDE_STATUS_CANCELING,
+                eta_text=message,
+            )
+            self.state.append_ride_event(ride_id, "system", message)
+            return ride
+
+    def force_cancel_ride(self, ride_id: str, reason: str = "server_shutdown"):
+        """在服务关闭等场景立即终止行程，不等待下一个节点。
+
+        参数说明：
+        ride_id: 当前活动行程 ID。
+        reason: 强制终止原因，仅用于错误说明。
+        """
+
+        with self._state_lock:
+            self._cancel_reasons.pop(ride_id, None)
+            ride = self.state.get_ride(ride_id)
+            canceled = self.state.finish_ride(
+                ride_id,
+                status=RIDE_STATUS_CANCELED,
+                current_position=ride.current_position,
+                eta_text="服务正在关闭，小车已紧急停车",
+                error_message=reason,
+            )
+            self.state.append_ride_event(ride_id, "system", canceled.eta_text)
+            return canceled
+
+    def _finish_canceled_at_node(self, ride_id: str):
+        """在导航确认的前方节点完成用户取消请求。"""
+
+        with self._state_lock:
+            ride = self.state.get_ride(ride_id)
+            reason = self._cancel_reasons.pop(ride_id, "passenger_cancel")
+            message = f"行程已取消，小车已在节点 {ride.current_position} 停车"
+            canceled = self.state.finish_ride(
+                ride_id,
+                status=RIDE_STATUS_CANCELED,
+                current_position=ride.current_position,
+                eta_text=message,
+                error_message=reason,
+            )
+            canceled = self.state.update_ride(
+                ride_id,
+                route=list(canceled.progress),
+            )
+            self.state.append_ride_event(ride_id, "system", message)
+            return canceled
 
     def _mark_pickup_arrived(self, ride_id: str, pickup: str, progress: List[str]):
-        message = f"已到达起点 {pickup}，请上车"
-        self.state.update_ride(
-            ride_id,
-            status=RIDE_STATUS_ARRIVED_PICKUP,
-            current_position=pickup,
-            progress=progress,
-            eta_text=message,
-        )
-        self.state.append_ride_event(ride_id, "car", message)
+        with self._state_lock:
+            pickup_message = f"已到达起点 {pickup}，请上车"
+            is_canceling = self._is_cancel_requested(ride_id)
+            status = (
+                RIDE_STATUS_CANCELING
+                if is_canceling
+                else RIDE_STATUS_ARRIVED_PICKUP
+            )
+            message = (
+                "取消请求已收到，小车将在前方下一个节点停车"
+                if is_canceling
+                else pickup_message
+            )
+            self.state.append_ride_event(ride_id, "car", pickup_message)
+            self.state.update_ride(
+                ride_id,
+                status=status,
+                current_position=pickup,
+                progress=progress,
+                eta_text=message,
+            )
 
     def _finish_arrived(self, ride_id: str, destination: str, progress: List[str]):
+        self._cancel_reasons.pop(ride_id, None)
         message = f"已到达终点 {destination}，即将发送到达邮件"
         self.state.finish_ride(
             ride_id,
@@ -355,6 +353,7 @@ class RideService:
         self.state.append_ride_event(ride_id, "mail", "到达邮件已发送")
 
     def _mark_failed(self, ride_id: str, exc: Exception):
+        self._cancel_reasons.pop(ride_id, None)
         ride = self.state.get_ride(ride_id)
         message = f"行程失败：{exc}"
         failed = self.state.finish_ride(
@@ -368,12 +367,24 @@ class RideService:
         return failed
 
     def _is_active_ride(self, ride_id: str):
-        active_ride = self.state.get_active_ride()
-        return active_ride is not None and active_ride.id == ride_id
+        with self._state_lock:
+            active_ride = self.state.get_active_ride()
+            return active_ride is not None and active_ride.id == ride_id
+
+    def _is_cancel_requested(self, ride_id: str):
+        """返回当前活动行程是否正在等待节点停车。"""
+
+        with self._state_lock:
+            active_ride = self.state.get_active_ride()
+            return (
+                active_ride is not None
+                and active_ride.id == ride_id
+                and ride_id in self._cancel_reasons
+            )
 
 
-def build_fake_route(current_position: str, stops: List[str]):
-    """生成前端同款曼哈顿假路线。
+def build_display_route(current_position: str, stops: List[str]):
+    """生成前端使用的曼哈顿展示路线。
 
     参数说明：
     current_position: 小车当前可信位置。

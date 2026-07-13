@@ -82,6 +82,7 @@ class GridNavigator:
         initial_heading,
         cancel_requested_fn=None,
         node_reached_fn=None,
+        stop_at_next_node_fn=None,
     ):
         """Navigate from start to end using trusted-node state transitions.
 
@@ -91,6 +92,8 @@ class GridNavigator:
         initial_heading: Trusted heading at the start node.
         cancel_requested_fn: Optional callback returning True when navigation must stop.
         node_reached_fn: Optional callback(node, heading) after reaching a trusted node.
+        stop_at_next_node_fn: Optional callback for a graceful stop. When requested
+            during an edge, finish that edge and stop at the confirmed next node.
 
         Steps:
         Check cancellation before each planning/execution phase, pass the same signal
@@ -166,6 +169,8 @@ class GridNavigator:
                     except Exception:
                         self.motor.brake()
                         raise
+                if self._stop_at_node_requested(stop_at_next_node_fn):
+                    return NAV_CANCELED
                 if self._cancel_requested(cancel_requested_fn):
                     return NAV_CANCELED
                 continue
@@ -201,6 +206,8 @@ class GridNavigator:
                     f"nav recovered at={_fmt_node(self.current_node)} "
                     f"heading={self.current_heading}"
                 )
+                if self._stop_at_node_requested(stop_at_next_node_fn):
+                    return NAV_CANCELED
                 continue
 
             self.motor.brake()
@@ -241,6 +248,27 @@ class GridNavigator:
         self.motor.brake()
         self._log(f"nav canceled at={_fmt_node(self.current_node)}")
         return NAV_CANCELED
+
+    def _stop_at_node_requested(self, stop_at_next_node_fn):
+        """Check a graceful-stop request only while positioned at a trusted node.
+
+        Parameters:
+        stop_at_next_node_fn: Optional zero-argument callback. It is deliberately
+            not passed into EdgeFollower, so a request made between nodes cannot
+            stop the motors until the planned forward node is confirmed.
+        """
+
+        if stop_at_next_node_fn is None:
+            return False
+        try:
+            requested = bool(stop_at_next_node_fn())
+        except Exception:
+            self.motor.brake()
+            raise
+        if requested:
+            self.motor.brake()
+            self._log(f"nav graceful_stop at={_fmt_node(self.current_node)}")
+        return requested
 
     def _all_blocked_edges(self):
         return self.static_blocked_edges | self.dynamic_blocked_edges

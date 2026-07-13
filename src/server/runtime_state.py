@@ -27,6 +27,7 @@ CAR_MODE_RUNNING = "running"
 CAR_MODE_ERROR = "error"
 
 RIDE_STATUS_DISPATCHING = "dispatching"
+RIDE_STATUS_CANCELING = "canceling"
 RIDE_STATUS_ARRIVED = "arrived"
 RIDE_STATUS_FAILED = "failed"
 RIDE_STATUS_CANCELED = "canceled"

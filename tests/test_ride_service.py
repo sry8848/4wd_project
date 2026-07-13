@@ -22,6 +22,7 @@ class FakeNavigator:
         initial_heading,
         cancel_requested_fn=None,
         node_reached_fn=None,
+        stop_at_next_node_fn=None,
     ):
         self.calls.append((start, end, initial_heading))
         nodes = self.segment_nodes.pop(0) if self.segment_nodes else []
@@ -29,6 +30,8 @@ class FakeNavigator:
             node_reached_fn(node, heading)
             if self.after_node_fn is not None:
                 self.after_node_fn()
+            if stop_at_next_node_fn is not None and stop_at_next_node_fn():
+                return NAV_CANCELED
             if cancel_requested_fn is not None and cancel_requested_fn():
                 return NAV_CANCELED
         return self.results.pop(0) if self.results else NAV_ARRIVED
@@ -115,7 +118,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             nonlocal canceled
             if not canceled:
                 canceled = True
-                self.service.cancel_ride(ride.id)
+                self.service.request_cancel_ride(ride.id)
 
         navigator = FakeNavigator(
             [[((1, 2), "north"), ((0, 2), "north")]],
@@ -126,8 +129,29 @@ class RideServiceHardwareRideTest(unittest.TestCase):
 
         self.assertEqual(finished.status, "canceled")
         self.assertEqual(finished.progress, ["C3", "B3"])
+        self.assertEqual(finished.route, finished.progress)
+        self.assertEqual(finished.current_position, "B3")
+        self.assertIn("节点 B3 停车", finished.eta_text)
         self.assertEqual(len(navigator.calls), 1)
         self.assertEqual(self.state.get_latest_mail().status, "none")
+
+    def test_cancel_requested_before_segment_still_moves_to_next_forward_node(self):
+        ride = self.submit()
+        requested = self.service.request_cancel_ride(ride.id)
+        self.assertEqual(requested.status, "canceling")
+        self.assertIsNotNone(self.state.get_active_ride())
+
+        navigator = FakeNavigator(
+            [[((1, 2), "north"), ((0, 2), "north")]],
+        )
+
+        finished = self.service.run_hardware_ride(ride.id, navigator)
+
+        self.assertEqual(finished.status, "canceled")
+        self.assertEqual(finished.progress, ["C3", "B3"])
+        self.assertEqual(finished.route, finished.progress)
+        self.assertEqual(finished.current_position, "B3")
+        self.assertIsNone(self.state.get_active_ride())
 
     def test_hardware_ride_marks_no_path_as_failed(self):
         ride = self.submit()
