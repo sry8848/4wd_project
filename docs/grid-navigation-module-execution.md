@@ -1,6 +1,6 @@
-# 网格导航新状态机设计说明
+# 当前网格导航行进逻辑与状态机
 
-本文定义网格导航、巡线入点、动态障碍封边和回节点恢复的目标设计。后续代码和实机验收以本文为准。
+本文记录当前 `src/tasks/line_follow.py`、`src/tasks/edge_follow.py`、`src/tasks/grid_navigation.py` 和 `src/server/hardware_factory.py` 已实现的真实行为，包括巡线、转向、出点、障碍封边、倒车恢复和重新规划。本文不描述未来设想；文档与代码冲突时，先停止实车测试并重新核对代码。
 
 ## 1. 目标与边界
 
@@ -54,16 +54,16 @@
 - 超声模块本身不知道障碍属于哪条边。
 - 是否相信缓存、什么时候封边，由边执行状态机决定。
 
-### 2.2 需要按新口径调整的模块
+### 2.2 当前行进编排模块
 
 `src/tasks/line_follow.py`
 
 - 继续提供基础巡线动作判断。
-- 需要把“读数、动作、是否节点、是否看到线”一起返回给上层。
+- 把“读数、动作、是否节点、是否看到线”一起返回给上层。
 - 默认全白仍表示找线；`EDGE_TRAVEL` 和倒车恢复会按各自上下文把全白解释为直行。
 - 不决定坐标、不决定封边、不决定 A*。
 
-建议结果对象：
+当前结果对象：
 
 ```python
 class LineStepResult:
@@ -76,19 +76,22 @@ class LineStepResult:
 
 `src/tasks/edge_follow.py`
 
-- `follow_edge()` / `recover_to_start_node()` 的目标语义由边执行器状态机承载。
-- 可以保留文件名和对外类名以减少迁移成本，但内部必须按新状态机组织。
+- `EdgeFollower` 承载单条计划边的执行和倒车恢复状态机。
 - 边执行器只执行“从当前可信节点尝试走向计划相邻节点”。
 - 边执行器不调用 A*，不修改全局地图。
 
-建议核心接口：
+当前核心接口：
 
 ```python
-class EdgeExecutor:
-    def execute_planned_edge(self, target_heading, max_seconds):
+class EdgeFollower:
+    def execute_planned_edge(
+        self, current_heading, target_heading, max_seconds, cancel_requested_fn=None
+    ):
         ...
 
-    def recover_to_start_node(self, return_heading, max_seconds):
+    def recover_to_start_node(
+        self, return_heading, max_seconds, cancel_requested_fn=None
+    ):
         ...
 ```
 
@@ -133,9 +136,9 @@ planned_edge = frozenset({current_node, next_node})
 
 ### 3.3 超声缓存门控
 
-后台超声缓存可能滞后，也可能在转向时扫到上一条边附近的障碍。每次完整测距发布时递增 `reading_sequence`，边执行器只接受进入当前边之后发布的新读数。
+后台超声缓存可能滞后，也可能在转向时扫到上一条边附近的障碍。后台每轮只调用一次 `read_distance()`，立即发布距离、障碍布尔值并递增 `reading_sequence`，然后等待 `0.06` 秒再开始下一轮。边执行器只接受进入当前边之后发布的新序号。
 
-建议门控对象：
+当前门控对象：
 
 ```python
 class ObstacleGate:
@@ -151,33 +154,35 @@ class ObstacleGate:
 
 - 转向、出点、恢复阶段不根据超声封边。
 - 忽略进入当前边之前发布的旧缓存。
-- 不要求先读到安全；进入边时障碍已经存在也必须停车。
+- 不要求先读到安全；进入边后第一条新鲜读数报告障碍即可停车。
 - 边中丢线找线时仍检查障碍，不能因巡线不稳定关闭安全检测。
 - 只对不同 `reading_sequence` 的新读数计数。
+- 有效距离小于 `20 cm` 才是障碍；`-1` 保持当前语义，不判定为障碍。
 
-推荐演示参数：
+当前参数：
 
 ```text
 obstacle_confirm_samples = 1
 threshold = 20 cm
 ```
 
-## 4. 新状态机
+## 4. 当前状态机
 
 网格导航分两层状态机：
 
 - `GridNavigator`：节点级状态机，只管选边和地图。
-- `EdgeExecutor`：边级状态机，只管执行当前计划边。
+- `EdgeFollower`：边级状态机，只管执行当前计划边和障碍后的倒车恢复。
 
 ### 4.1 节点级状态机
 
 ```text
 AT_NODE
   -> 调用 A* 规划 current_node 到 target_node
+  -> 无路径时 brake() 并返回 no_path
   -> 取 path[1] 作为 next_node
   -> 生成 planned_edge
   -> 计算 target_heading
-  -> 调用 EdgeExecutor.execute_planned_edge()
+  -> 调用 EdgeFollower.execute_planned_edge()
 
 EDGE_RESULT: reached_next_node
   -> current_node = next_node
@@ -186,7 +191,7 @@ EDGE_RESULT: reached_next_node
 
 EDGE_RESULT: blocked_on_planned_edge
   -> dynamic_blocked_edges.add(planned_edge)
-  -> 调用 EdgeExecutor.recover_to_start_node()
+  -> 调用 EdgeFollower.recover_to_start_node()
 
 RECOVERY_RESULT: recovered_to_start_node
   -> current_node 不变
@@ -196,6 +201,10 @@ RECOVERY_RESULT: recovered_to_start_node
 任意失败
   -> brake()
   -> 返回 failed
+
+取消
+  -> 行进阶段检测到立即取消信号时 brake()
+  -> 网页乘客取消采用“到前方下一个可信节点停车”
 ```
 
 注意：遇到中途障碍时，`current_node` 不更新为 `next_node`。恢复成功后，车头仍朝向原计划边方向，因为恢复动作使用倒车而不是原地掉头。
@@ -212,14 +221,15 @@ ALIGN_TO_EDGE
 
 LEAVE_NODE
   受保护出点
-  直行边以速度20前进
-  左右转后以速度20沿同方向画弧
+  直行边以 forward_speed=5 前进
+  左右转后以速度5沿同方向画弧
+  至少执行0.10秒
   连续全白确认进入目标边
   不读超声
   不认下一个节点
 
 EDGE_TRAVEL
-  正常巡线
+  全白以5直行，左修正80，右修正100
   允许障碍门控检查 current planned_edge
   允许入点确认
 
@@ -229,12 +239,13 @@ EDGE_BLOCKED
 
 RECOVER_TO_NODE
   倒车沿原边回原节点
+  全白以5直倒，左右当前读数以20修正
   不根据超声封边
   不封新边
   稳定入点后返回 recovered_to_start_node
 
 FAILED
-  超时、丢线、转向失败或恢复失败
+  边执行总超时、走边全白超时、转向失败、出点失败或恢复超时
 ```
 
 ### 4.3 Mermaid 状态图
@@ -254,8 +265,14 @@ flowchart TD
     C -- "转向失败" --> Z["FAILED: 停车"]
     D -- "出点失败" --> Z
     E -- "丢线/超时" --> Z
-    H -- "恢复失败" --> Z
+    H -- "恢复超时" --> Z
+    C -- "立即取消" --> X["CANCELED: 停车"]
+    D -- "立即取消" --> X
+    E -- "立即取消" --> X
+    H -- "立即取消" --> X
 ```
+
+以上失败状态指代码已经识别并返回的超时、丢线、无路径和取消。当前 `GridNavigator.navigate()` 对 `execute_planned_edge()` 与 `recover_to_start_node()` 的意外 Python 异常还没有最外层 `finally: brake()`，这是尚未消除的安全缺口，不能把“所有异常一定立即停车”写成已实现事实。
 
 ## 5. 转向与目标线确认
 
@@ -275,26 +292,26 @@ flowchart TD
 -> 在离开十字中心后，用传感器确认进入目标边
 ```
 
-### 5.3 推荐转向流程
+### 5.3 当前转向流程
 
 `ALIGN_TO_EDGE`：
 
 1. 根据 `current_heading` 和 `target_heading` 计算左转、右转或掉头。
 2. 按对应方向执行故意不足的预转向。
 3. 粗转期间不读超声、不封边、不认节点。
-4. 预转完成后，全白时以速度5沿计划方向精细找线。
-5. 先忽略旧节点；离开旧线后第一次重新看到黑线，立即停车。
+4. 预转完成后，按计划转向方向以速度5继续精细找线。
+5. 如果直接读到“内侧两路黑且不是节点”的普通居中线，立即停车；否则先等传感器全白离开旧线，再在第一次重新看到黑线时停车。
 6. 停车后进入 `LEAVE_NODE`；5秒内找不到目标线则返回 `turn_failed`。
 
 `LEAVE_NODE`：
 
-1. 未转向时以 `forward_speed=20` 直行驶出十字口。
-2. 左转、右转或左掉头后，以相同方向和速度20画弧驶出。
+1. 未转向时以 `forward_speed=5` 直行驶出十字口。
+2. 左转、右转或左掉头后，以相同方向和速度5画弧驶出。
 3. 出点阶段不调用普通巡线的80/100修正。
 4. 如果仍然看到黑线或节点，继续当前直行或弧线动作，不允许入点。
 5. 执行最短出点时间后，连续 `node_clear_samples` 次全白才进入 `EDGE_TRAVEL`。
 
-当前待实机验证的运行参数：
+当前网页实车参数：
 
 ```text
 left_turn_rough_seconds = 0.4 秒
@@ -302,9 +319,9 @@ right_turn_rough_seconds = 0.3 秒
 uturn_rough_seconds = 0.8 秒（当前固定左旋）
 turn_acquire_timeout = 5.0 秒
 search_speed = 5
-leave_node_min_seconds = 0.20 ~ 0.40 秒
-node_clear_samples = 3
-line_acquire_timeout = 2 ~ 4 秒
+leave_node_min_seconds = 0.10 秒
+node_clear_samples = 1
+line_acquire_timeout = 3.0 秒
 ```
 
 完整90°和180°实测时间仍是 `0.6/0.5/1.2/1.1` 秒；这里的 `0.4/0.3/0.8` 是故意不足的预转向，不表示已经重新测得完整角度。
@@ -318,6 +335,8 @@ line_acquire_timeout = 2 ~ 4 秒
 - 根据超声封边。
 - 把任何节点读数当作下一节点。
 - 更新 `current_node`。
+
+因此出点最短 `0.10s` 期间存在一个明确的超声盲区；当前实现只是缩短盲区，没有消除它。
 
 出点成功条件：
 
@@ -335,13 +354,23 @@ line_acquire_timeout = 2 ~ 4 秒
 每轮循环：
 
 1. 读取巡线传感器。
-2. 四路全白时直行；左侧见黑向左修正，右侧见黑向右修正。
+2. 四路全白时执行 `forward(5, 5)`；左侧见黑执行 `left(0, 80)`，右侧见黑执行 `right(100, 0)`。
 3. 每轮都调用障碍门控，不能因全白直行关闭安全检测。
 4. 如果障碍门控确认，返回 `blocked_on_planned_edge`。
 5. 如果稳定检测到节点，返回 `reached_next_node`。
 6. 连续全白超过 `line_lost_timeout`，按无法区分的真实丢线处理并停车。
 
 当前小车在普通边居中时主要为全白，因此全白直行是 `EDGE_TRAVEL` 的专用策略。全白也可能表示完全出线，单帧无法区分，所以仍保留5秒安全上限。
+
+走边读数按以下优先级解释：
+
+| 读数条件 | 动作 |
+| --- | --- |
+| `LI=1`、`RI=1`，且 `LO=1` 或 `RO=1` | 节点，先刹车并确认入点 |
+| 左内侧单独见黑或左外侧见黑 | `left(0, 80)` |
+| 右内侧单独见黑或右外侧见黑 | `right(100, 0)` |
+| 只有内侧两路同时见黑 | `forward(5, 5)` |
+| 四路全白 | `forward(5, 5)`，同时累计全白安全时间 |
 
 ## 8. 入点逻辑
 
@@ -370,10 +399,10 @@ left_inner and right_inner and (left_outer or right_outer)
 node_confirm_samples = 1，单次检测到节点即确认
 ```
 
-确认后可以轻推居中：
+确认后以当前 `forward_speed` 轻推居中：
 
 ```text
-node_center_seconds = 0.05 ~ 0.15 秒
+node_center_seconds = 0.08 秒
 ```
 
 然后停车并返回 `reached_next_node`。只有这时 `GridNavigator` 才能执行：
@@ -394,7 +423,7 @@ EDGE_TRAVEL
 且 planned_edge 已确定
 且出点已经完成
 且障碍门控已 armed
-且连续确认障碍
+且进入边后发布的新鲜超声读数小于阈值
 ```
 
 封边流程：
@@ -409,6 +438,8 @@ EDGE_TRAVEL
 
 如果 `dynamic_blocked_edges=3`，说明程序在三条不同的计划边上都确认过障碍。新版通过缓存序号忽略进入当前边之前发布的旧读数，不再依赖“先读到安全”。
 
+当前 `obstacle_confirm_samples=1`，所以一条不同序号的新鲜障碍读数即可停车。走边单轮处理顺序是：取消检查、执行巡线动作、节点确认、障碍确认、全白超时检查。节点已经确认时会先完成入点，不再把节点位置的同轮超声读数当作边中障碍。
+
 ## 10. 恢复回节点逻辑
 
 中途确认障碍后，恢复目标是回到障碍边的起点节点，而不是继续探索。
@@ -416,15 +447,15 @@ EDGE_TRAVEL
 恢复阶段：
 
 1. 停车。
-2. 沿当前计划边直接倒车。
-3. 四路全白时直线倒车。
-4. 左右见黑时只修正当前一轮；下一轮恢复全白后立即恢复直线倒车。
+2. 沿当前计划边直接倒车，倒车基础速度为5。
+3. 四路全白或内侧两路同时见黑时执行 `backward(5, 5)`。
+4. 左侧见黑时执行 `backward(20, 0)`，右侧见黑时执行 `backward(0, 20)`；修正只作用于当前一轮，下一轮恢复全白后立即恢复直线倒车。
 5. 沿原线退回起点节点。
 6. 稳定入点确认。
 7. 停车。
 8. 返回 `recovered_to_start_node`。
 
-实车已确认普通边居中时主要是四路全白，因此倒车不能把首次全白解释为丢线，也不能在全白后持续复用上一次弯曲修正。四路传感器无法区分“黑线位于中间”和“完全离开黑线”，所以倒车恢复不再单独使用全白丢线计时，统一由 `recovery_max_seconds` 限制最长运动时间。
+实车已确认普通边居中时主要是四路全白，因此倒车不能把首次全白解释为丢线，也不能在全白后持续复用上一次弯曲修正。四路传感器无法区分“黑线位于中间”和“完全离开黑线”，所以倒车恢复不再单独使用全白丢线计时，统一由 `recovery_max_seconds=8` 限制最长运动时间；超时必须刹车并返回 `recovery_failed`。
 
 恢复阶段禁止：
 
@@ -444,9 +475,9 @@ current_heading = target_heading
 
 例如当前计划是 `A2 -> A3`，目标朝向是 east。中途障碍后倒车回到 `A2`，车头仍朝 east。导航层下一轮从 `A2`、heading=east 重新 A*。
 
-## 11. 建议返回值
+## 11. 当前返回值
 
-边执行器建议返回结构化结果，而不是只返回字符串：
+边执行器返回结构化结果，而不是只返回字符串：
 
 ```python
 class EdgeExecutionResult:
@@ -455,7 +486,7 @@ class EdgeExecutionResult:
     reason: str | None
 ```
 
-推荐状态：
+当前状态：
 
 ```text
 reached_next_node
@@ -466,48 +497,43 @@ leave_node_failed
 line_lost
 timeout
 recovery_failed
+canceled
 ```
 
 这样 `GridNavigator` 不需要猜测失败发生在哪个阶段。
 
-## 12. 命令行参数建议
+## 12. 当前网页实车参数
 
-`src/tools/test_grid_navigation.py` 应暴露调参入口：
+网页后端通过 `src/server/hardware_factory.py` 创建真实导航硬件。设计、网页运行和实车验收统一以下参数，不在本文并列其他入口的旧默认值：
 
-```text
---left-turn-rough-seconds
---right-turn-rough-seconds
---uturn-rough-seconds
---turn-acquire-timeout
---line-acquire-timeout
---leave-node-min-seconds
---node-clear-samples
---node-confirm-samples
---node-center-seconds
---obstacle-arm-delay
---obstacle-clear-samples
---obstacle-confirm-samples
---line-lost-timeout
---reverse-speed
---reverse-turn-speed
---no-reverse-radar
-```
+| 参数 | 当前值 | 使用位置 |
+| --- | ---: | --- |
+| `forward_speed` | `5` | 直行、出点和入点居中 |
+| `line_left_turn_speed` | `80` | 走边左修正 |
+| `line_right_turn_speed` | `100` | 走边右修正 |
+| `search_speed` | `5` | 转向后的精细找线 |
+| `spin_speed` | `30` | 左右粗转和掉头粗转 |
+| `left_turn_rough_seconds` | `0.4s` | 左转预转 |
+| `right_turn_rough_seconds` | `0.3s` | 右转预转 |
+| `uturn_rough_seconds` | `0.8s` | 180度左预转 |
+| `turn_acquire_timeout` | `5.0s` | 转向精细找线期限 |
+| `leave_node_min_seconds` | `0.10s` | 最短出点时间 |
+| `node_clear_samples` | `1` | 出点全白确认次数 |
+| `node_confirm_samples` | `1` | 入点确认次数 |
+| `node_center_seconds` | `0.08s` | 入点后的短暂前推 |
+| `obstacle_confirm_samples` | `1` | 新鲜障碍读数确认次数 |
+| `ultrasonic_threshold_cm` | `20cm` | 动态障碍阈值 |
+| `ultrasonic_enabled` | `True` | 网页实车启用前向障碍检测 |
+| `reverse_radar_enabled` | `True` | 网页实车倒车期间启用蜂鸣提示 |
+| `line_acquire_timeout` | `3.0s` | 出点完成期限 |
+| `line_lost_timeout` | `5.0s` | 仅用于 `EDGE_TRAVEL` 全白安全上限 |
+| `reverse_speed` | `5` | 全白直线倒车 |
+| `reverse_turn_speed` | `20` | 倒车左右修正 |
+| `edge_max_seconds` | `20s` | 转向、出点、走边共享的单边总期限 |
+| `recovery_max_seconds` | `8s` | 倒车回原节点总期限 |
+| `delay_seconds` | `0.02s` | 边执行循环间隔 |
 
-演示优先默认值：
-
-```text
-left_turn_rough_seconds = 0.4
-right_turn_rough_seconds = 0.3
-uturn_rough_seconds = 0.8
-turn_acquire_timeout = 5.0
-node_clear_samples = 3
-node_confirm_samples = 1
-node_center_seconds = 0.08
-obstacle_confirm_samples = 1
-line_lost_timeout = 5.0
-reverse_speed = 15
-reverse_turn_speed = 20
-```
+超声后台每次只做一次触发测量，发布后等待 `0.06s`；该间隔不是电机控制循环参数。`-1` 不算障碍，倒车雷达只负责蜂鸣，不参与停车、封边或恢复成败判断。
 
 ## 13. 视频演示建议
 
@@ -534,20 +560,21 @@ A1 -> A2
 `LineFollower`：
 
 - 节点读数能被识别。
-- 默认全白仍低速找线，走边上下文的全白改为直行。
+- 默认全白仍低速左找线；走边上下文的全白改为速度5直行。
 - 单步结果包含读数、动作、节点标记和是否看到线。
 
-`EdgeExecutor`：
+`EdgeFollower`：
 
 - 转向阶段不读取超声。
 - 出点阶段不读取超声，也不允许入点。
-- 转向首次见线后停车，出点只执行速度20的直行或同向弧线。
+- 转向首次见线后停车，出点只执行速度5的直行或同向弧线。
 - 连续 `node_clear_samples` 次全白后才进入边中。
 - 走边全白直行时仍检查障碍并停车。
 - 进入边前的旧超声缓存不能封边。
-- 默认一条新鲜的滤波障碍读数即返回 `blocked_on_planned_edge`。
+- 默认一条新鲜的单次测距障碍读数即返回 `blocked_on_planned_edge`。
 - 默认一次节点读数即算入点；可通过 `node_confirm_samples` 提高确认次数。
-- 恢复阶段直接倒车，不执行原地掉头。
+- 恢复阶段全白直线倒车，左右见黑只修正当前一轮，不执行原地掉头。
+- 倒车恢复不使用全白丢线计时，达到8秒总期限仍未识别原节点时刹车失败。
 
 `GridNavigator`：
 
