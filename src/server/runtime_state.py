@@ -226,6 +226,7 @@ class RuntimeState:
         *,
         status=None,
         current_position=None,
+        heading=None,
         route=None,
         progress=None,
         eta_text=None,
@@ -238,6 +239,7 @@ class RuntimeState:
         ride_id: 行程 ID。
         status: 新行程状态，不传则保持原值。
         current_position: 新可信位置，不传则保持原值。
+        heading: 导航确认的新朝向，不传则保持当前小车朝向。
         route: 新完整路径，不传则保持原值。
         progress: 新进度路径，不传则保持原值。
         eta_text: 前端展示文字，不传则保持原值。
@@ -249,6 +251,9 @@ class RuntimeState:
             normalize_point(current_position, "current_position")
             if current_position is not None
             else ride.current_position
+        )
+        updated_heading = (
+            _validate_heading(heading) if heading is not None else self._heading
         )
         updated_at = self._now()
         updated = replace(
@@ -264,6 +269,7 @@ class RuntimeState:
         )
         self._rides[ride_id] = updated
         self._current_position = updated_position
+        self._heading = updated_heading
         if eta_text is not None:
             self._last_message = eta_text
         self._updated_at = updated_at

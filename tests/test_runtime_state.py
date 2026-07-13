@@ -98,6 +98,7 @@ class RuntimeStateTest(unittest.TestCase):
             ride.id,
             status="to_pickup",
             current_position="B3",
+            heading="east",
             route=["C3", "B3", "A3", "A2", "A1"],
             progress=["C3", "B3"],
             eta_text="来车中",
@@ -109,6 +110,7 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertEqual(updated.route, ["C3", "B3", "A3", "A2", "A1"])
         self.assertEqual(updated.progress, ["C3", "B3"])
         self.assertEqual(car_status.current_position, "B3")
+        self.assertEqual(car_status.heading, "east")
         self.assertEqual(car_status.last_message, "来车中")
 
     def test_finish_ride_clears_active_ride_for_terminal_status(self):

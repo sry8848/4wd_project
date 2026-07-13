@@ -1,8 +1,7 @@
 """Ride orchestration service for the HTTP backend.
 
-This module intentionally avoids web framework and hardware dependencies. The
-first backend version uses fake grid movement so the frontend/API loop can be
-integrated before real car execution.
+This module intentionally avoids web framework and GPIO dependencies. It can
+run the local fake route or orchestrate an injected GridNavigator.
 """
 
 from __future__ import annotations
@@ -19,6 +18,12 @@ from src.server.runtime_state import (
     RuntimeStateError,
 )
 from src.server.schemas import RideCreateRequest, RideStatusResponse
+from src.tasks.grid_navigation import (
+    NAV_ARRIVED,
+    NAV_CANCELED,
+    NAV_FAILED,
+    NAV_NO_PATH,
+)
 
 
 RIDE_STATUS_TO_PICKUP = "to_pickup"
@@ -31,7 +36,7 @@ MAIL_STATUS_FAILED = "failed"
 
 
 class RideService:
-    """编排叫车行程状态和第一版假导航。
+    """编排叫车行程状态以及假导航或注入的真实导航器。
 
     参数说明：
     state: RuntimeState 实例，保存小车状态、行程、消息和邮件状态。
@@ -150,8 +155,107 @@ class RideService:
                 return self.state.get_ride(ride_id)
             return self._mark_failed(ride_id, exc)
 
+    def run_hardware_ride(self, ride_id: str, navigator):
+        """使用已创建的 GridNavigator 执行真实分段行程。
+
+        参数说明：
+        ride_id: submit_ride() 返回的活动行程 ID。
+        navigator: hardware_factory 创建的 GridNavigator；本方法不拥有或关闭它。
+
+        分步逻辑：
+        1. 按当前位置、起点、途径点、终点逐段调用真实导航。
+        2. 每到一个可信节点就更新位置、朝向、进度和后续路线预览。
+        3. 把取消、无路和硬件失败映射为对应行程终态。
+        """
+        try:
+            ride = self.state.get_ride(ride_id)
+            if not self._is_active_ride(ride_id):
+                return ride
+
+            stops = [ride.start, *ride.waypoints, ride.end]
+            pickup_arrived = ride.current_position == ride.start
+            if pickup_arrived:
+                self._mark_pickup_arrived(
+                    ride_id,
+                    ride.start,
+                    list(ride.progress),
+                )
+
+            for stop_index, stop in enumerate(stops):
+                if not self._is_active_ride(ride_id):
+                    return self.state.get_ride(ride_id)
+                if stop_index == 0 and pickup_arrived:
+                    continue
+
+                car_status = self.state.get_car_status()
+                remaining_stops = stops[stop_index:]
+
+                def report_node(node, heading):
+                    if not self._is_active_ride(ride_id):
+                        return
+                    point = coord_to_point(node)
+                    current_ride = self.state.get_ride(ride_id)
+                    progress = list(current_ride.progress)
+                    if not progress or progress[-1] != point:
+                        progress.append(point)
+                    preview = build_fake_route(point, remaining_stops)
+                    route = [*progress, *preview[1:]]
+                    status = (
+                        RIDE_STATUS_IN_TRIP
+                        if current_ride.status
+                        in (RIDE_STATUS_ARRIVED_PICKUP, RIDE_STATUS_IN_TRIP)
+                        else RIDE_STATUS_TO_PICKUP
+                    )
+                    message = f"当前位置 {point}"
+                    self.state.update_ride(
+                        ride_id,
+                        status=status,
+                        current_position=point,
+                        heading=heading,
+                        route=route,
+                        progress=progress,
+                        eta_text=message,
+                    )
+                    self.state.append_ride_event(ride_id, "car", message)
+
+                result = navigator.navigate(
+                    point_to_coord(car_status.current_position),
+                    point_to_coord(stop),
+                    car_status.heading,
+                    cancel_requested_fn=lambda: not self._is_active_ride(ride_id),
+                    node_reached_fn=report_node,
+                )
+                if result == NAV_CANCELED:
+                    return self.state.get_ride(ride_id)
+                if result == NAV_NO_PATH:
+                    raise RuntimeError(f"无法规划到点位 {stop} 的路线")
+                if result == NAV_FAILED:
+                    raise RuntimeError(f"导航到点位 {stop} 时硬件执行失败")
+                if result != NAV_ARRIVED:
+                    raise RuntimeError(f"未知导航结果: {result}")
+
+                current_ride = self.state.get_ride(ride_id)
+                if stop_index == 0:
+                    self._mark_pickup_arrived(
+                        ride_id,
+                        ride.start,
+                        list(current_ride.progress),
+                    )
+                elif stop == ride.end:
+                    return self._finish_arrived(
+                        ride_id,
+                        ride.end,
+                        list(current_ride.progress),
+                    )
+
+            return self.state.get_ride(ride_id)
+        except Exception as exc:
+            if not self._is_active_ride(ride_id):
+                return self.state.get_ride(ride_id)
+            return self._mark_failed(ride_id, exc)
+
     def cancel_ride(self, ride_id: str, reason: str = "passenger_cancel"):
-        """取消活动行程并停止后续假导航推进。
+        """取消活动行程并让当前导航执行停止后续推进。
 
         参数说明：
         ride_id: 活动行程 ID。
