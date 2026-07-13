@@ -150,9 +150,9 @@ class EdgeFollower:
         motor, and speed attributes.
     obstacle_sensor: Optional ultrasonic cache wrapper used only in EDGE_TRAVEL.
     turn_speed: PWM speed used by coarse turns.
-    turn_rough_seconds: Coarse 90-degree turn duration.
-    uturn_rough_seconds: Coarse 180-degree turn duration.
-    uturn_seconds: Deprecated alias for uturn_rough_seconds.
+    left_turn_rough_seconds: Calibrated coarse 90-degree left-turn duration.
+    right_turn_rough_seconds: Calibrated coarse 90-degree right-turn duration.
+    uturn_rough_seconds: Calibrated left-spin 180-degree turn duration.
     leave_node_min_seconds: Minimum protected time before leaving can succeed.
     node_clear_samples: Consecutive non-node line samples required to leave.
     node_confirm_samples: Consecutive node samples required to enter a node.
@@ -175,9 +175,9 @@ class EdgeFollower:
         line_follower,
         obstacle_sensor=None,
         turn_speed=30,
-        turn_rough_seconds=0.5,
+        left_turn_rough_seconds=0.6,
+        right_turn_rough_seconds=0.5,
         uturn_rough_seconds=1.2,
-        uturn_seconds=None,
         leave_node_min_seconds=0.25,
         node_clear_samples=3,
         node_confirm_samples=3,
@@ -195,9 +195,11 @@ class EdgeFollower:
         time_fn=None,
         sleep_fn=None,
     ):
-        if uturn_seconds is not None:
-            uturn_rough_seconds = uturn_seconds
-        if turn_rough_seconds < 0 or uturn_rough_seconds < 0:
+        if (
+            left_turn_rough_seconds < 0
+            or right_turn_rough_seconds < 0
+            or uturn_rough_seconds < 0
+        ):
             raise ValueError("rough turn seconds must be >= 0")
         if leave_node_min_seconds < 0:
             raise ValueError("leave_node_min_seconds must be >= 0")
@@ -222,7 +224,8 @@ class EdgeFollower:
         self.motor = line_follower.motor
         self.obstacle_sensor = obstacle_sensor
         self.turn_speed = turn_speed
-        self.turn_rough_seconds = turn_rough_seconds
+        self.left_turn_rough_seconds = left_turn_rough_seconds
+        self.right_turn_rough_seconds = right_turn_rough_seconds
         self.uturn_rough_seconds = uturn_rough_seconds
         self.leave_node_min_seconds = leave_node_min_seconds
         self.node_clear_samples = node_clear_samples
@@ -406,12 +409,12 @@ class EdgeFollower:
             return self._time() < deadline
         if diff == 1:
             self._log(
-                f"align turn=right seconds={self.turn_rough_seconds} "
+                f"align turn=right seconds={self.right_turn_rough_seconds} "
                 f"from={current_heading} to={target_heading}"
             )
             return self._rough_turn(
                 left=False,
-                seconds=self.turn_rough_seconds,
+                seconds=self.right_turn_rough_seconds,
                 deadline=deadline,
                 cancel_requested_fn=cancel_requested_fn,
             )
@@ -427,12 +430,12 @@ class EdgeFollower:
                 cancel_requested_fn=cancel_requested_fn,
             )
         self._log(
-            f"align turn=left seconds={self.turn_rough_seconds} "
+            f"align turn=left seconds={self.left_turn_rough_seconds} "
             f"from={current_heading} to={target_heading}"
         )
         return self._rough_turn(
             left=True,
-            seconds=self.turn_rough_seconds,
+            seconds=self.left_turn_rough_seconds,
             deadline=deadline,
             cancel_requested_fn=cancel_requested_fn,
         )

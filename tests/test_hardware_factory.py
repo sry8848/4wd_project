@@ -57,6 +57,14 @@ class GridNavigationHardwareTest(unittest.TestCase):
             edge_follower_class.call_args.kwargs["reverse_radar"],
             reverse_radar,
         )
+        self.assertEqual(
+            edge_follower_class.call_args.kwargs["left_turn_rough_seconds"],
+            0.6,
+        )
+        self.assertEqual(
+            edge_follower_class.call_args.kwargs["right_turn_rough_seconds"],
+            0.5,
+        )
         navigator_class.assert_called_once()
         self.assertIs(resources.navigator, navigator)
 

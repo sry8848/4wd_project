@@ -125,7 +125,8 @@ class EdgeFollowerTest(unittest.TestCase):
         )
         options = {
             "turn_speed": 30,
-            "turn_rough_seconds": 0.2,
+            "left_turn_rough_seconds": 0.2,
+            "right_turn_rough_seconds": 0.2,
             "uturn_rough_seconds": 0.4,
             "leave_node_min_seconds": 0.0,
             "node_clear_samples": 2,
@@ -239,7 +240,7 @@ class EdgeFollowerTest(unittest.TestCase):
     def test_execute_planned_edge_cancels_during_rough_turn(self):
         follower = self.build_follower(
             [LINE_READING, LINE_READING],
-            turn_rough_seconds=0.4,
+            right_turn_rough_seconds=0.4,
         )
 
         result = follower.execute_planned_edge(
@@ -372,6 +373,7 @@ class EdgeFollowerTest(unittest.TestCase):
                 NODE_READING,
                 NODE_READING,
             ],
+            right_turn_rough_seconds=0.5,
             debug_fn=logs.append,
         )
 
@@ -383,10 +385,32 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
         joined = "\n".join(logs)
-        self.assertIn("align turn=right", joined)
+        self.assertIn("align turn=right seconds=0.5", joined)
         self.assertIn("leave_node start", joined)
         self.assertIn("edge_travel start", joined)
         self.assertIn("edge_exec result status=reached_next_node", joined)
+
+    def test_left_turn_uses_independent_calibrated_duration(self):
+        logs = []
+        follower = self.build_follower(
+            [
+                LINE_READING,
+                LINE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+            left_turn_rough_seconds=0.6,
+            debug_fn=logs.append,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_NORTH,
+            HEADING_WEST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+        self.assertIn("align turn=left seconds=0.6", "\n".join(logs))
 
 
 if __name__ == "__main__":

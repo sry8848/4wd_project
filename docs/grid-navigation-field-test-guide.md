@@ -94,7 +94,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
   --search-speed 5 \
-  --spin-speed 20 \
+  --spin-speed 30 \
+  --left-turn-rough-seconds 0.6 \
+  --right-turn-rough-seconds 0.5 \
+  --uturn-rough-seconds 1.2 \
   --edge-timeout 20 \
   --recovery-timeout 6 \
   --no-ultrasonic \
@@ -158,9 +161,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
   --search-speed 5 \
-  --spin-speed 20 \
-  --turn-seconds 0.5 \
-  --uturn-seconds 1.2 \
+  --spin-speed 30 \
+  --left-turn-rough-seconds 0.6 \
+  --right-turn-rough-seconds 0.5 \
+  --uturn-rough-seconds 1.2 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
   --no-ultrasonic \
@@ -175,7 +179,7 @@ final node: C5
 dynamic blocked edges: 0
 ```
 
-如果单边稳定、多边不稳定，重点看转向后第一条边是否摆正。可能需要调 `--turn-seconds`、`--spin-speed`，而不是继续改巡线速度。
+如果单边稳定、多边不稳定，重点看转向后第一条边是否摆正。应重新校准左右粗转时间和 `--spin-speed`，不能只改巡线速度。
 
 ## 8. 测试 5：只读超声后台监控
 
@@ -208,7 +212,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
   --search-speed 5 \
-  --spin-speed 20 \
+  --spin-speed 30 \
+  --left-turn-rough-seconds 0.6 \
+  --right-turn-rough-seconds 0.5 \
+  --uturn-rough-seconds 1.2 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
   --no-ultrasonic \
@@ -233,7 +240,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
   --search-speed 5 \
-  --spin-speed 20 \
+  --spin-speed 30 \
+  --left-turn-rough-seconds 0.6 \
+  --right-turn-rough-seconds 0.5 \
+  --uturn-rough-seconds 1.2 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
   --threshold 20 \
@@ -263,7 +273,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
   --search-speed 5 \
-  --spin-speed 20 \
+  --spin-speed 30 \
+  --left-turn-rough-seconds 0.6 \
+  --right-turn-rough-seconds 0.5 \
+  --uturn-rough-seconds 1.2 \
   --reverse-speed 15 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \

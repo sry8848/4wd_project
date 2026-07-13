@@ -54,20 +54,9 @@ def parse_args():
     )
     parser.add_argument("--search-speed", type=int, default=8)
     parser.add_argument("--spin-speed", type=int, default=30)
-    parser.add_argument(
-        "--turn-seconds",
-        type=float,
-        default=0.5,
-        help="deprecated alias used when --turn-rough-seconds is omitted",
-    )
-    parser.add_argument(
-        "--uturn-seconds",
-        type=float,
-        default=1.2,
-        help="deprecated alias used when --uturn-rough-seconds is omitted",
-    )
-    parser.add_argument("--turn-rough-seconds", type=float, default=None)
-    parser.add_argument("--uturn-rough-seconds", type=float, default=None)
+    parser.add_argument("--left-turn-rough-seconds", type=float, default=0.6)
+    parser.add_argument("--right-turn-rough-seconds", type=float, default=0.5)
+    parser.add_argument("--uturn-rough-seconds", type=float, default=1.2)
     parser.add_argument("--leave-node-min-seconds", type=float, default=0.25)
     parser.add_argument("--node-clear-samples", type=int, default=3)
     parser.add_argument("--node-confirm-samples", type=int, default=3)
@@ -148,16 +137,6 @@ def build_grid(rows, cols):
 
 def main():
     args = parse_args()
-    turn_rough_seconds = (
-        args.turn_rough_seconds
-        if args.turn_rough_seconds is not None
-        else args.turn_seconds
-    )
-    uturn_rough_seconds = (
-        args.uturn_rough_seconds
-        if args.uturn_rough_seconds is not None
-        else args.uturn_seconds
-    )
     grid = build_grid(args.rows, args.cols)
     start = parse_coordinate(args.start)
     end = parse_coordinate(args.end)
@@ -180,8 +159,9 @@ def main():
             line_right_turn_speed=args.line_right_turn_speed,
             search_speed=args.search_speed,
             spin_speed=args.spin_speed,
-            turn_rough_seconds=turn_rough_seconds,
-            uturn_rough_seconds=uturn_rough_seconds,
+            left_turn_rough_seconds=args.left_turn_rough_seconds,
+            right_turn_rough_seconds=args.right_turn_rough_seconds,
+            uturn_rough_seconds=args.uturn_rough_seconds,
             leave_node_min_seconds=args.leave_node_min_seconds,
             node_clear_samples=args.node_clear_samples,
             node_confirm_samples=args.node_confirm_samples,

@@ -78,8 +78,10 @@ class GridNavigationToolTest(unittest.TestCase):
             [
                 "--threshold",
                 "20",
-                "--turn-rough-seconds",
-                "0.45",
+                "--left-turn-rough-seconds",
+                "0.6",
+                "--right-turn-rough-seconds",
+                "0.5",
                 "--uturn-rough-seconds",
                 "1.1",
                 "--obstacle-confirm-samples",
@@ -91,7 +93,8 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertTrue(options["ultrasonic_enabled"])
         self.assertTrue(options["reverse_radar_enabled"])
         self.assertEqual(options["ultrasonic_threshold_cm"], 20)
-        self.assertEqual(options["turn_rough_seconds"], 0.45)
+        self.assertEqual(options["left_turn_rough_seconds"], 0.6)
+        self.assertEqual(options["right_turn_rough_seconds"], 0.5)
         self.assertEqual(options["uturn_rough_seconds"], 1.1)
         self.assertEqual(options["obstacle_confirm_samples"], 3)
 

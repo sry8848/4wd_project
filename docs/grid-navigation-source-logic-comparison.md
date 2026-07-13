@@ -496,7 +496,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
   --search-speed 5 \
-  --spin-speed 20 \
+  --spin-speed 30 \
+  --left-turn-rough-seconds 0.6 \
+  --right-turn-rough-seconds 0.5 \
+  --uturn-rough-seconds 1.2 \
   --edge-timeout 20 \
   --recovery-timeout 6 \
   --no-ultrasonic

@@ -291,11 +291,12 @@ flowchart TD
 4. 离开节点后要求看到目标边的线形态，例如内侧至少一路看到线，最好逐步收敛到内侧两路居中。
 5. 如果全白丢线，进入受限找线；找线阶段仍不读超声。
 
-推荐参数：
+当前小车在 `spin_speed = 30` 下的实测参数：
 
 ```text
-turn_rough_seconds_90 = 0.35 ~ 0.70 秒
-turn_rough_seconds_180 = 0.80 ~ 1.40 秒
+left_turn_rough_seconds = 0.6 秒
+right_turn_rough_seconds = 0.5 秒
+uturn_rough_seconds = 1.2 秒（当前固定左旋）
 leave_node_min_seconds = 0.20 ~ 0.40 秒
 node_clear_samples = 3
 line_acquire_timeout = 2 ~ 4 秒
@@ -465,7 +466,8 @@ recovery_failed
 `src/tools/test_grid_navigation.py` 应暴露调参入口：
 
 ```text
---turn-rough-seconds
+--left-turn-rough-seconds
+--right-turn-rough-seconds
 --uturn-rough-seconds
 --line-acquire-timeout
 --leave-node-min-seconds

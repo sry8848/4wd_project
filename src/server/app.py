@@ -1,8 +1,10 @@
-"""FastAPI entry point for the first fake-ride backend loop."""
+"""FastAPI entry point for simulated or real 4WD ride execution."""
 
 from __future__ import annotations
 
+import os
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -12,6 +14,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.algorithms.astar import PASSABLE
+from src.server.hardware_factory import create_grid_navigation_hardware
 from src.server.point_codec import PointValidationError
 from src.server.ride_service import RideService
 from src.server.runtime_state import RuntimeState, RuntimeStateError
@@ -27,12 +31,91 @@ from src.server.schemas import (
 
 
 LOGGER = logging.getLogger(__name__)
+NAVIGATION_MODE_FAKE = "fake"
+NAVIGATION_MODE_HARDWARE = "hardware"
+VALID_NAVIGATION_MODES = (NAVIGATION_MODE_FAKE, NAVIGATION_MODE_HARDWARE)
 FAKE_RIDE_STEP_DELAY_SECONDS = 0.5
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
-runtime_state = RuntimeState()
+
+def load_navigation_configuration(environ):
+    """读取并严格校验导航模式和启动时可信姿态。
+
+    参数说明：
+    environ: 环境变量映射，只读取 CAR_NAVIGATION_MODE、
+        CAR_INITIAL_POSITION 和 CAR_INITIAL_HEADING。
+
+    分步逻辑：
+    1. 模式缺省为 fake；未知值立即报错，不静默回退。
+    2. hardware 模式强制要求显式提供初始点位和朝向。
+    3. fake 模式继续使用 C3/north 作为本地演示初始值。
+    """
+    mode = environ.get("CAR_NAVIGATION_MODE", NAVIGATION_MODE_FAKE)
+    if mode not in VALID_NAVIGATION_MODES:
+        raise RuntimeError("CAR_NAVIGATION_MODE 必须是 fake 或 hardware")
+
+    initial_position = environ.get("CAR_INITIAL_POSITION")
+    initial_heading = environ.get("CAR_INITIAL_HEADING")
+    if mode == NAVIGATION_MODE_HARDWARE and (
+        initial_position is None or initial_heading is None
+    ):
+        raise RuntimeError(
+            "hardware 模式必须设置 CAR_INITIAL_POSITION 和 CAR_INITIAL_HEADING"
+        )
+    return (
+        mode,
+        initial_position if initial_position is not None else "C3",
+        initial_heading if initial_heading is not None else "north",
+    )
+
+
+NAVIGATION_MODE, INITIAL_POSITION, INITIAL_HEADING = load_navigation_configuration(
+    os.environ
+)
+runtime_state = RuntimeState(
+    initial_position=INITIAL_POSITION,
+    initial_heading=INITIAL_HEADING,
+)
 ride_service = RideService(runtime_state)
-app = FastAPI(title="4WD Car Backend", version="0.1.0")
+
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    """在 FastAPI 生命周期内创建并安全释放唯一一组真实硬件。
+
+    参数说明：
+    app_instance: 当前 FastAPI 应用，用 state 保存硬件资源所有者。
+
+    分步逻辑：
+    1. fake 模式不创建任何 GPIO 对象。
+    2. hardware 模式启动前创建 5x5 网格导航硬件，失败则拒绝启动。
+    3. 关闭时先取消活动行程，再停车并释放全部硬件资源。
+    """
+    hardware = None
+    if NAVIGATION_MODE == NAVIGATION_MODE_HARDWARE:
+        grid_definition = GridResponse.default()
+        grid = [
+            [PASSABLE for _col in grid_definition.cols]
+            for _row in grid_definition.rows
+        ]
+        hardware = create_grid_navigation_hardware(grid)
+    app_instance.state.navigation_hardware = hardware
+
+    try:
+        yield
+    finally:
+        if hardware is not None:
+            try:
+                active_ride = runtime_state.get_active_ride()
+                if active_ride is not None:
+                    ride_service.cancel_ride(active_ride.id, "server_shutdown")
+            finally:
+                hardware.close()
+                app_instance.state.navigation_hardware = None
+
+
+app = FastAPI(title="4WD Car Backend", version="0.2.0", lifespan=lifespan)
+app.state.navigation_hardware = None
 
 
 @app.exception_handler(PointValidationError)
@@ -145,6 +228,8 @@ def get_health():
     return {
         "ok": True,
         "service": "4wd-backend",
+        "navigation_mode": NAVIGATION_MODE,
+        "hardware_ready": app.state.navigation_hardware is not None,
         "time": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -183,7 +268,7 @@ def get_car_status():
     status_code=status.HTTP_202_ACCEPTED,
 )
 def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
-    """创建行程并在响应后启动假导航。
+    """创建行程并按显式启动模式注册后台导航。
 
     参数说明：
     payload: 前端 JSON 请求体，只允许 start、waypoints、end。
@@ -192,15 +277,31 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
     分步逻辑：
     1. 使用 RideCreateRequest 校验外部输入。
     2. 创建行程并立即准备 202 响应。
-    3. 注册固定 0.5 秒步进的后台假行程。
+    3. fake 模式注册模拟行程，hardware 模式注册真实 GridNavigator。
     """
     request = RideCreateRequest.from_payload(payload)
+    hardware = None
+    if NAVIGATION_MODE == NAVIGATION_MODE_HARDWARE:
+        hardware = app.state.navigation_hardware
+        if hardware is None:
+            raise RuntimeStateError(
+                "hardware_not_ready",
+                "真实导航硬件尚未初始化",
+            )
+
     ride = ride_service.submit_ride(request)
-    background_tasks.add_task(
-        ride_service.run_fake_ride,
-        ride.id,
-        FAKE_RIDE_STEP_DELAY_SECONDS,
-    )
+    if hardware is not None:
+        background_tasks.add_task(
+            ride_service.run_hardware_ride,
+            ride.id,
+            hardware.navigator,
+        )
+    else:
+        background_tasks.add_task(
+            ride_service.run_fake_ride,
+            ride.id,
+            FAKE_RIDE_STEP_DELAY_SECONDS,
+        )
     return ride
 
 
@@ -257,7 +358,18 @@ def cancel_ride(
             )
         reason = payload["reason"].strip()
 
+    hardware = None
+    if NAVIGATION_MODE == NAVIGATION_MODE_HARDWARE:
+        hardware = app.state.navigation_hardware
+        if hardware is None:
+            raise RuntimeStateError(
+                "hardware_not_ready",
+                "真实导航硬件尚未初始化",
+            )
+
     ride = ride_service.cancel_ride(ride_id, reason)
+    if hardware is not None:
+        hardware.motor.brake()
     return {
         "id": ride.id,
         "status": ride.status,
