@@ -57,12 +57,13 @@ LED_R_PIN = 22
 LED_G_PIN = 27
 LED_B_PIN = 24
 LED_PWM_FREQUENCY = 1000
-# 摄像头全景拍摄云台配置。
-# 当前硬件接口表中的“云台 J1 / BCM 23”更可能是超声波避障云台，
-# 不应默认当成摄像头水平云台。只有现场确认摄像头舵机信号线后，才在
-# 命令行里显式传入对应 BCM 编号。
-CAMERA_PAN_SERVO_PIN = None
-CAMERA_TILT_SERVO_PIN = None
+# 摄像头两自由度云台配置。
+# Yahboom 树莓派 TCP_Control.py 使用 GPIO.BCM，并明确配置：
+# - ServoLeftRightPin = 11，对应接口表 J2 / BCM 11。
+# - ServoUpDownPin = 9，对应接口表 J3 / BCM 9。
+# 注意：BCM 9、11 同时属于 PS2 接口，启用摄像头云台时不能再启用 PS2。
+CAMERA_PAN_SERVO_PIN = 11
+CAMERA_TILT_SERVO_PIN = 9
 
 # 全景默认参数按参考项目“0-180 度、约 6 度一步”的思路设置。
 PANORAMA_START_ANGLE = 0
