@@ -62,7 +62,7 @@ def parse_args():
     parser.add_argument("--node-clear-samples", type=int, default=1)
     parser.add_argument("--node-confirm-samples", type=int, default=1)
     parser.add_argument("--node-center-seconds", type=float, default=0.08)
-    parser.add_argument("--obstacle-confirm-samples", type=int, default=1)
+    parser.add_argument("--obstacle-confirm-samples", type=int, default=2)
     parser.add_argument("--line-acquire-timeout", type=float, default=3.0)
     parser.add_argument("--line-lost-timeout", type=float, default=5.0)
     parser.add_argument("--reverse-speed", type=int, default=5)

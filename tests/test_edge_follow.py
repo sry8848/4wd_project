@@ -132,6 +132,7 @@ class SnapshotObstacleSensor:
 
 class EdgeFollowerTest(unittest.TestCase):
     def test_obstacle_gate_counts_only_distinct_background_readings(self):
+        logs = []
         sensor = SnapshotObstacleSensor(
             [
                 (4, 30.0, False),
@@ -140,10 +141,43 @@ class EdgeFollowerTest(unittest.TestCase):
                 (6, 11.0, True),
             ]
         )
+        gate = ObstacleGate(
+            sensor=sensor,
+            confirm_samples=2,
+            debug_fn=logs.append,
+        )
+
+        gate.start_edge()
+
+        self.assertFalse(gate.check_blocked())
+        self.assertFalse(gate.check_blocked())
+        self.assertTrue(gate.check_blocked())
+        self.assertEqual(
+            logs,
+            [
+                "obstacle_gate armed sequence=4",
+                "obstacle_gate sequence=5 distance_cm=12.0 obstructed=1 "
+                "hit_count=1/2",
+                "obstacle_gate sequence=6 distance_cm=11.0 obstructed=1 "
+                "hit_count=2/2",
+            ],
+        )
+
+    def test_obstacle_gate_safe_reading_resets_hit_count(self):
+        sensor = SnapshotObstacleSensor(
+            [
+                (4, 30.0, False),
+                (5, 12.0, True),
+                (6, 35.0, False),
+                (7, 11.0, True),
+                (8, 10.0, True),
+            ]
+        )
         gate = ObstacleGate(sensor=sensor, confirm_samples=2)
 
         gate.start_edge()
 
+        self.assertFalse(gate.check_blocked())
         self.assertFalse(gate.check_blocked())
         self.assertFalse(gate.check_blocked())
         self.assertTrue(gate.check_blocked())

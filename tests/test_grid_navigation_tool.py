@@ -94,6 +94,7 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertEqual(options["edge_max_seconds"], 20)
         self.assertEqual(options["recovery_max_seconds"], 8)
         self.assertEqual(options["ultrasonic_threshold_cm"], 20)
+        self.assertEqual(options["obstacle_confirm_samples"], 2)
 
     def test_cli_navigation_defaults_match_web_backend_defaults(self):
         captured, _hardware, _output = self.run_tool()

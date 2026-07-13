@@ -81,12 +81,14 @@ class ObstacleGate:
     Parameters:
     sensor: Optional object providing read_snapshot().
     confirm_samples: Consecutive fresh obstacle readings required to block the edge.
+    debug_fn: Optional callback receiving fresh ultrasonic decision logs.
     """
 
     def __init__(
         self,
         sensor=None,
-        confirm_samples=1,
+        confirm_samples=2,
+        debug_fn=None,
     ):
         if confirm_samples <= 0:
             raise ValueError("confirm_samples must be > 0")
@@ -95,6 +97,7 @@ class ObstacleGate:
         self.confirm_samples = confirm_samples
         self.last_sequence = None
         self.hit_count = 0
+        self._debug = debug_fn
 
     def start_edge(self):
         """Ignore cache published before the current EDGE_TRAVEL phase."""
@@ -102,23 +105,33 @@ class ObstacleGate:
         self.hit_count = 0
         if self.sensor is not None:
             self.last_sequence = self.sensor.read_snapshot()[0]
+            self._log(f"obstacle_gate armed sequence={self.last_sequence}")
 
     def check_blocked(self):
         """Return True after confirmed new readings report an obstacle."""
         if self.sensor is None or self.last_sequence is None:
             return False
 
-        sequence, _distance, obstructed = self.sensor.read_snapshot()
+        sequence, distance, obstructed = self.sensor.read_snapshot()
         if sequence <= self.last_sequence:
             return False
         self.last_sequence = sequence
 
         if not obstructed:
             self.hit_count = 0
-            return False
-
-        self.hit_count += 1
+        else:
+            self.hit_count += 1
+        self._log(
+            f"obstacle_gate sequence={sequence} distance_cm={distance:.1f} "
+            f"obstructed={int(obstructed)} "
+            f"hit_count={self.hit_count}/{self.confirm_samples}"
+        )
         return self.hit_count >= self.confirm_samples
+
+    def _log(self, message):
+        """Emit one obstacle decision log when debugging is enabled."""
+        if self._debug is not None:
+            self._debug(message)
 
 
 class EdgeFollower:
@@ -138,7 +151,7 @@ class EdgeFollower:
     node_confirm_samples: Node samples required to enter a node; default 1 means
         one matching reading is accepted immediately.
     node_center_seconds: Short forward push after confirming a node.
-    obstacle_confirm_samples: Fresh filtered obstacle readings required before
+    obstacle_confirm_samples: Fresh single-shot obstacle readings required before
         blocking an edge.
     line_acquire_timeout: Maximum protected leave/search time.
     line_lost_timeout: Maximum all-white line loss time during travel.
@@ -163,7 +176,7 @@ class EdgeFollower:
         node_clear_samples=3,
         node_confirm_samples=1,
         node_center_seconds=0.08,
-        obstacle_confirm_samples=1,
+        obstacle_confirm_samples=2,
         line_acquire_timeout=3.0,
         line_lost_timeout=5.0,
         reverse_speed=15,
@@ -225,6 +238,7 @@ class EdgeFollower:
         self.obstacle_gate = ObstacleGate(
             sensor=obstacle_sensor,
             confirm_samples=obstacle_confirm_samples,
+            debug_fn=debug_fn,
         )
 
     def _log(self, message):
