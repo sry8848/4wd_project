@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 from pathlib import Path
 import sys
 import time
@@ -31,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=int,
-        default=1,
+        default=0,
         help="OpenCV camera device index, usually 0 or 1.",
     )
     parser.add_argument("--width", type=int, default=640)
@@ -47,12 +46,6 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="Camera exposure warm-up time in seconds.",
-    )
-    parser.add_argument(
-        "--debug-output-dir",
-        type=Path,
-        default=Path("captures") / "qr_debug",
-        help="Directory used to save a diagnostic frame after timeout.",
     )
     return parser.parse_args()
 
@@ -72,7 +65,6 @@ def main() -> int:
 
     deadline = time.monotonic() + args.timeout
     reported_invalid_texts = set()
-    frames_scanned = 0
 
     try:
         recognizer = QRCodeRecognizer()
@@ -87,7 +79,6 @@ def main() -> int:
             while time.monotonic() < deadline:
                 # 1. Read the latest camera frame.
                 frame = camera.read_frame()
-                frames_scanned += 1
                 # 2. Decode every QR code visible in this frame.
                 for raw_text in recognizer.decode(frame):
                     try:
@@ -109,21 +100,6 @@ def main() -> int:
                     print(f"Type: {payload.qr_type}")
                     print(f"Identifier: {payload.identifier}")
                     return 0
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            debug_path = (
-                args.debug_output_dir / f"qr_timeout_{timestamp}.jpg"
-            )
-            capture = camera.capture(debug_path, burst_count=3)
-            print(
-                f"Scanned {frames_scanned} frames without a valid result.",
-                file=sys.stderr,
-            )
-            print(f"Diagnostic photo saved: {capture.path}", file=sys.stderr)
-            print(
-                f"Diagnostic photo sharpness: {capture.sharpness:.2f}",
-                file=sys.stderr,
-            )
 
     except (CameraCaptureError, QRCodeRecognitionError, ValueError) as exc:
         print(f"QR-code scan failed: {exc}", file=sys.stderr)
