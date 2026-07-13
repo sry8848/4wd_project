@@ -197,6 +197,30 @@ class OpenCVCameraSession:
             sharpness=sharpness,
         )
 
+    def read_frame(self, *, warmup_frames: int = 0, copy: bool = True):
+        """Read one frame without saving it to disk.
+
+        Args:
+            warmup_frames: Buffered frames to discard before returning a frame.
+            copy: Return an independent frame copy when true.
+
+        Returns:
+            The latest OpenCV BGR image frame.
+
+        This method supports continuous image-processing tasks such as QR-code
+        recognition while keeping camera ownership inside the hardware layer.
+        """
+
+        if warmup_frames < 0:
+            raise ValueError("warmup_frames must be greater than or equal to 0")
+        if self._camera is None or self._cv2 is None:
+            raise CameraCaptureError("OpenCV camera session is not open")
+
+        # 1. Discard any requested buffered frames and obtain the newest frame.
+        frame = self._read_frame(warmup_frames)
+        # 2. Isolate the returned image from the capture buffer when requested.
+        return frame.copy() if copy else frame
+
     def close(self) -> None:
         """Release the OpenCV camera resource."""
 
