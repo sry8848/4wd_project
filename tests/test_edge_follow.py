@@ -9,6 +9,7 @@ from src.tasks.edge_follow import (
     EDGE_REACHED_NEXT_NODE,
     EDGE_RECOVERED_TO_START_NODE,
     EDGE_RECOVERY_FAILED,
+    EDGE_TIMEOUT,
     EdgeFollower,
 )
 from src.tasks.grid_navigation import HEADING_EAST, HEADING_NORTH, HEADING_WEST
@@ -36,6 +37,11 @@ class FakeClock:
 
 
 class OvershootingClock(FakeClock):
+    def monotonic(self):
+        value = self.now
+        self.now += 0.000001
+        return value
+
     def sleep(self, seconds):
         self.sleeps.append(seconds)
         self.now += seconds + 0.001
@@ -240,6 +246,26 @@ class EdgeFollowerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_node_center_deadline_is_reported_as_timeout_not_cancellation(self):
+        follower = self.build_follower(
+            [
+                LINE_READING,
+                LINE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+            node_center_seconds=0.2,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_EAST,
+            HEADING_EAST,
+            max_seconds=0.25,
+        )
+
+        self.assertEqual(result.status, EDGE_TIMEOUT)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
     def test_execute_planned_edge_reports_line_lost_without_sealing_edge(self):

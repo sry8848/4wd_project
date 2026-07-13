@@ -539,9 +539,14 @@ class EdgeFollower:
                     )
                     last_summary = summary
                 if node_count >= self.node_confirm_samples:
-                    if not self._center_on_node(cancel_requested_fn):
+                    if not self._center_on_node(deadline, cancel_requested_fn):
+                        status = (
+                            EDGE_CANCELED
+                            if self._cancel_requested(cancel_requested_fn)
+                            else EDGE_TIMEOUT
+                        )
                         return EdgeExecutionResult(
-                            EDGE_CANCELED,
+                            status,
                             final_heading=final_heading,
                         )
                     return EdgeExecutionResult(
@@ -626,9 +631,14 @@ class EdgeFollower:
                     )
                     last_summary = summary
                 if node_count >= self.node_confirm_samples:
-                    if not self._center_on_node(cancel_requested_fn):
+                    if not self._center_on_node(deadline, cancel_requested_fn):
+                        status = (
+                            EDGE_CANCELED
+                            if self._cancel_requested(cancel_requested_fn)
+                            else EDGE_TIMEOUT
+                        )
                         return EdgeExecutionResult(
-                            EDGE_CANCELED,
+                            status,
                             final_heading=final_heading,
                         )
                     return EdgeExecutionResult(
@@ -693,20 +703,26 @@ class EdgeFollower:
             centered_line=is_centered_line(reading),
         )
 
-    def _center_on_node(self, cancel_requested_fn):
+    def _center_on_node(self, deadline, cancel_requested_fn):
+        """Move briefly toward the node center, then always brake.
+
+        Parameters:
+        deadline: Absolute deadline of the whole edge or recovery operation.
+        cancel_requested_fn: Optional callback returning True when motion must stop.
+        """
+        completed = True
         if self.node_center_seconds > 0:
             self.motor.forward(
                 self.line_follower.forward_speed,
                 self.line_follower.forward_speed,
             )
-            if not self._wait_while_active(
+            completed = self._wait_while_active(
                 self.node_center_seconds,
-                self._time() + self.node_center_seconds,
+                deadline,
                 cancel_requested_fn,
-            ):
-                return False
+            )
         self.motor.brake()
-        return True
+        return completed
 
     def _cancel_requested(self, cancel_requested_fn):
         """Check one external cancellation callback and brake before returning.
