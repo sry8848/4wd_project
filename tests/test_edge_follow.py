@@ -406,7 +406,7 @@ class EdgeFollowerTest(unittest.TestCase):
 
     def test_recover_to_start_node_reverses_without_turning_or_ultrasonic(self):
         follower = self.build_follower(
-            [LINE_READING, NODE_READING, NODE_READING],
+            [WHITE_READING, NODE_READING, NODE_READING],
             obstructed_values=[True, True, True],
             reverse_speed=12,
             reverse_turn_speed=34,
@@ -450,7 +450,7 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertIn(("backward", 0, 22), self.motor.calls)
         self.assertIn(("backward", 11, 11), self.motor.calls)
 
-    def test_reverse_recovery_reports_failure_when_line_stays_lost(self):
+    def test_reverse_recovery_all_white_drives_straight_until_timeout(self):
         follower = self.build_follower(
             [WHITE_READING, WHITE_READING, WHITE_READING, WHITE_READING],
             default_reading=WHITE_READING,
@@ -463,10 +463,11 @@ class EdgeFollowerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, EDGE_RECOVERY_FAILED)
-        self.assertEqual(result.reason, EDGE_LINE_LOST)
-        self.assertNotIn(("backward", 15, 15), self.motor.calls)
+        self.assertEqual(result.reason, EDGE_TIMEOUT)
+        self.assertIn(("backward", 15, 15), self.motor.calls)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
 
-    def test_reverse_recovery_reuses_last_direction_during_temporary_line_loss(self):
+    def test_reverse_recovery_returns_to_straight_after_correction(self):
         follower = self.build_follower(
             [
                 RIGHT_READING,
@@ -486,7 +487,8 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_RECOVERED_TO_START_NODE)
         self.assertIn(("backward", 0, 22), self.motor.calls)
-        self.assertIn(("backward", 0, 11), self.motor.calls)
+        self.assertIn(("backward", 11, 11), self.motor.calls)
+        self.assertNotIn(("backward", 0, 11), self.motor.calls)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
     def test_reverse_recovery_ticks_and_stops_reverse_radar(self):

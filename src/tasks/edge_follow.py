@@ -696,10 +696,8 @@ class EdgeFollower:
         # Step 4: Recovery travel by reversing. No obstacle can seal a new edge.
         self._log("reverse_recovery start")
         node_count = 0
-        lost_since = None
         last_summary = None
         peak_node_count = 0
-        last_tracking_action = None
 
         while self._time() < deadline:
             if self._cancel_requested(cancel_requested_fn):
@@ -711,9 +709,7 @@ class EdgeFollower:
                 self.reverse_radar.tick()
 
             reading = self.line_follower.sensor.read()
-            result = self._apply_reverse_reading(reading, last_tracking_action)
-            if result.line_seen and not result.is_node:
-                last_tracking_action = result.action
+            result = self._apply_reverse_reading(reading)
 
             if result.is_node:
                 node_count += 1
@@ -747,26 +743,12 @@ class EdgeFollower:
             else:
                 node_count = 0
                 summary = _reading_summary(result)
-                if not result.line_seen and last_tracking_action is not None:
-                    summary += f" reverse_search={last_tracking_action}"
                 if summary != last_summary:
                     self._log(
                         f"reverse_recovery {summary} node_count={node_count}/"
                         f"{self.node_confirm_samples}"
                     )
                     last_summary = summary
-
-            lost_since = self._update_line_loss(result, lost_since)
-            if lost_since is not None and self._time() - lost_since >= self.line_lost_timeout:
-                self.motor.brake()
-                self._log(
-                    f"reverse_recovery line_lost last={last_summary} "
-                    f"peak_node_count={peak_node_count}"
-                )
-                return EdgeExecutionResult(
-                    EDGE_LINE_LOST,
-                    final_heading=final_heading,
-                )
 
             self._sleep(self.delay_seconds)
 
@@ -777,30 +759,28 @@ class EdgeFollower:
         )
         return EdgeExecutionResult(EDGE_TIMEOUT, final_heading=final_heading)
 
-    def _apply_reverse_reading(self, reading, last_tracking_action=None):
+    def _apply_reverse_reading(self, reading):
         """Drive one reverse line-follow step from an already-read sample.
 
         Parameters:
         reading: LineReading-like object from the front line sensor.
-        last_tracking_action: Last forward/left/right action seen on a valid line.
-            A temporary all-white reading repeats that direction at reverse_speed.
+
+        Steps:
+        Brake on a node, correct only the current left/right reading, and drive
+        straight backward on all-white because that is the verified centered-edge
+        reading for this car. The whole recovery timeout remains the safety bound.
         """
         action = decide_line_action(reading)
 
         if action == ACTION_NODE:
             self.motor.brake()
-        elif action == ACTION_FORWARD:
+        elif action == ACTION_FORWARD or not is_line_seen(reading):
+            action = ACTION_FORWARD
             self.motor.backward(self.reverse_speed, self.reverse_speed)
         elif action == ACTION_LEFT:
             self.motor.backward(self.reverse_turn_speed, 0)
         elif action == ACTION_RIGHT:
             self.motor.backward(0, self.reverse_turn_speed)
-        elif last_tracking_action == ACTION_FORWARD:
-            self.motor.backward(self.reverse_speed, self.reverse_speed)
-        elif last_tracking_action == ACTION_LEFT:
-            self.motor.backward(self.reverse_speed, 0)
-        elif last_tracking_action == ACTION_RIGHT:
-            self.motor.backward(0, self.reverse_speed)
         else:
             self.motor.brake()
 
