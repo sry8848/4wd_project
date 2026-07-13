@@ -52,6 +52,28 @@ class UltrasonicSensorTest(unittest.TestCase):
 
         self.assertEqual(gpio.cleanup_calls, [(17, 18)])
 
+    def test_monitor_publishes_sequenced_cached_reading(self):
+        gpio = FakeGPIO()
+        sensor = UltrasonicSensor(
+            gpio=gpio,
+            trig_pin=17,
+            echo_pin=18,
+            threshold_cm=20,
+            samples=1,
+            timeout_s=0.001,
+        )
+        sensor._monitoring = True
+
+        def read_once():
+            sensor._monitoring = False
+            return 12.0
+
+        sensor.read_filtered = read_once
+        sensor._monitor_loop()
+
+        self.assertEqual(sensor.get_cached_reading(), (1, 12.0, True))
+        sensor.close()
+
 
 if __name__ == "__main__":
     unittest.main()

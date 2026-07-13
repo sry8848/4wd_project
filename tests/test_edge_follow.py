@@ -12,6 +12,7 @@ from src.tasks.edge_follow import (
     EDGE_TIMEOUT,
     EDGE_TURN_FAILED,
     EdgeFollower,
+    ObstacleGate,
 )
 from src.tasks.grid_navigation import HEADING_EAST, HEADING_NORTH, HEADING_WEST
 from src.tasks.line_follow import LineFollower
@@ -91,15 +92,19 @@ class FakeObstacleSensor:
     def __init__(self, obstructed_values, clock):
         self.obstructed_values = list(obstructed_values)
         self.clock = clock
+        self.sequence = 0
         self.calls = 0
         self.call_times = []
 
-    def is_obstructed(self):
+    def read_snapshot(self):
         self.calls += 1
         self.call_times.append(self.clock.monotonic())
+        self.sequence += 1
         if self.obstructed_values:
-            return self.obstructed_values.pop(0)
-        return False
+            obstructed = self.obstructed_values.pop(0)
+        else:
+            obstructed = False
+        return self.sequence, -1.0, obstructed
 
 
 class FakeReverseRadar:
@@ -114,7 +119,35 @@ class FakeReverseRadar:
         self.stop_calls += 1
 
 
+class SnapshotObstacleSensor:
+    def __init__(self, snapshots):
+        self.snapshots = list(snapshots)
+        self.last_snapshot = self.snapshots[-1]
+
+    def read_snapshot(self):
+        if self.snapshots:
+            self.last_snapshot = self.snapshots.pop(0)
+        return self.last_snapshot
+
+
 class EdgeFollowerTest(unittest.TestCase):
+    def test_obstacle_gate_counts_only_distinct_background_readings(self):
+        sensor = SnapshotObstacleSensor(
+            [
+                (4, 30.0, False),
+                (5, 12.0, True),
+                (5, 12.0, True),
+                (6, 11.0, True),
+            ]
+        )
+        gate = ObstacleGate(sensor=sensor, confirm_samples=2)
+
+        gate.start_edge()
+
+        self.assertFalse(gate.check_blocked())
+        self.assertFalse(gate.check_blocked())
+        self.assertTrue(gate.check_blocked())
+
     def build_follower(
         self,
         readings,
@@ -145,9 +178,7 @@ class EdgeFollowerTest(unittest.TestCase):
             "node_clear_samples": 2,
             "node_confirm_samples": 2,
             "node_center_seconds": 0.0,
-            "obstacle_arm_delay": 0.0,
-            "obstacle_clear_samples": 1,
-            "obstacle_confirm_samples": 2,
+            "obstacle_confirm_samples": 1,
             "line_acquire_timeout": 0.5,
             "line_lost_timeout": 0.3,
             "delay_seconds": 0.1,
@@ -171,7 +202,7 @@ class EdgeFollowerTest(unittest.TestCase):
                 LINE_READING,
                 LINE_READING,
             ],
-            obstructed_values=[False, True, True],
+            obstructed_values=[False, True],
         )
 
         result = follower.execute_planned_edge(
@@ -182,7 +213,7 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_BLOCKED_ON_PLANNED_EDGE)
         self.assertEqual(self.motor.calls[0], ("spin_right", 30, 30))
-        self.assertEqual(self.obstacle_sensor.calls, 3)
+        self.assertEqual(self.obstacle_sensor.calls, 2)
         self.assertGreaterEqual(self.obstacle_sensor.call_times[0], 0.3)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
@@ -290,8 +321,38 @@ class EdgeFollowerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, EDGE_LINE_LOST)
-        self.assertEqual(self.obstacle_sensor.calls, 0)
+        self.assertGreater(self.obstacle_sensor.calls, 0)
         self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_execute_planned_edge_stops_for_obstacle_while_searching_for_line(self):
+        follower = self.build_follower(
+            [LINE_READING, LINE_READING, WHITE_READING],
+            obstructed_values=[False, True],
+            default_reading=WHITE_READING,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_EAST,
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_BLOCKED_ON_PLANNED_EDGE)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_execute_planned_edge_ignores_obstacle_cache_from_before_edge(self):
+        follower = self.build_follower(
+            [LINE_READING, LINE_READING, NODE_READING, NODE_READING],
+            obstructed_values=[True, False, False],
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_EAST,
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
 
     def test_execute_planned_edge_cancels_during_rough_turn(self):
         follower = self.build_follower(

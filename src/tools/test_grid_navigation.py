@@ -62,9 +62,7 @@ def parse_args():
     parser.add_argument("--node-clear-samples", type=int, default=3)
     parser.add_argument("--node-confirm-samples", type=int, default=1)
     parser.add_argument("--node-center-seconds", type=float, default=0.08)
-    parser.add_argument("--obstacle-arm-delay", type=float, default=0.3)
-    parser.add_argument("--obstacle-clear-samples", type=int, default=1)
-    parser.add_argument("--obstacle-confirm-samples", type=int, default=2)
+    parser.add_argument("--obstacle-confirm-samples", type=int, default=1)
     parser.add_argument("--line-acquire-timeout", type=float, default=3.0)
     parser.add_argument("--line-lost-timeout", type=float, default=5.0)
     parser.add_argument("--reverse-speed", type=int, default=15)
@@ -168,8 +166,6 @@ def main():
             node_clear_samples=args.node_clear_samples,
             node_confirm_samples=args.node_confirm_samples,
             node_center_seconds=args.node_center_seconds,
-            obstacle_arm_delay=args.obstacle_arm_delay,
-            obstacle_clear_samples=args.obstacle_clear_samples,
             obstacle_confirm_samples=args.obstacle_confirm_samples,
             line_acquire_timeout=args.line_acquire_timeout,
             line_lost_timeout=args.line_lost_timeout,

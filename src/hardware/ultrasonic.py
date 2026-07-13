@@ -68,6 +68,7 @@ class UltrasonicSensor:
         # Background-monitoring state
         self.obstacle_detected = False
         self.last_distance = -1.0
+        self.reading_sequence = 0
         self._monitoring = False
         self._thread = None
         self._lock = threading.Lock()
@@ -171,7 +172,22 @@ class UltrasonicSensor:
             with self._lock:
                 self.last_distance = d
                 self.obstacle_detected = (d > 0 and d < self.threshold)
+                self.reading_sequence += 1
             time.sleep(0.2)
+
+    def get_cached_reading(self):
+        """Return one atomic background reading snapshot.
+
+        Returns:
+        A tuple of ``(sequence, distance_cm, obstacle_detected)``. ``sequence``
+        increases only after a complete filtered measurement is published.
+        """
+        with self._lock:
+            return (
+                self.reading_sequence,
+                self.last_distance,
+                self.obstacle_detected,
+            )
 
     def start_monitoring(self):
         """Launch a daemon thread that continuously updates

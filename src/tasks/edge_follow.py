@@ -14,7 +14,6 @@ from src.tasks.line_follow import (
     ACTION_LEFT,
     ACTION_NODE,
     ACTION_RIGHT,
-    ACTION_SEARCH_LEFT,
     LineStepResult,
     decide_line_action,
     is_at_node,
@@ -61,80 +60,60 @@ class EdgeExecutionResult:
 
 
 class CachedObstacleSensor:
-    """Expose a background ultrasonic cache as an is_obstructed() sensor.
+    """Expose atomic background ultrasonic readings to the edge follower.
 
     Parameters:
-    source: Object with an obstacle_detected boolean updated by monitoring.
+    source: Object providing get_cached_reading().
     """
 
     def __init__(self, source):
         self.source = source
 
-    def is_obstructed(self):
-        """Return the latest cached obstacle state without measuring now."""
-        return bool(self.source.obstacle_detected)
+    def read_snapshot(self):
+        """Return ``(sequence, distance_cm, obstructed)`` without measuring."""
+        sequence, distance, obstructed = self.source.get_cached_reading()
+        return sequence, distance, bool(obstructed)
 
 
 class ObstacleGate:
-    """Debounce and arm ultrasonic readings for the current planned edge.
+    """Accept only fresh ultrasonic readings for the current planned edge.
 
     Parameters:
-    sensor: Optional object providing is_obstructed().
-    arm_delay: Seconds to wait after edge travel starts before reading.
-    clear_samples: Safe readings required before obstacle hits are trusted.
-    confirm_samples: Consecutive obstacle readings required to block the edge.
-    time_fn: Monotonic time function, injectable for tests.
+    sensor: Optional object providing read_snapshot().
+    confirm_samples: Consecutive fresh obstacle readings required to block the edge.
     """
 
     def __init__(
         self,
         sensor=None,
-        arm_delay=0.3,
-        clear_samples=1,
-        confirm_samples=2,
-        time_fn=None,
+        confirm_samples=1,
     ):
-        if arm_delay < 0:
-            raise ValueError("arm_delay must be >= 0")
-        if clear_samples < 0:
-            raise ValueError("clear_samples must be >= 0")
         if confirm_samples <= 0:
             raise ValueError("confirm_samples must be > 0")
 
         self.sensor = sensor
-        self.arm_delay = arm_delay
-        self.clear_samples = clear_samples
         self.confirm_samples = confirm_samples
-        self._time = time_fn if time_fn is not None else time.monotonic
-        self.started_at = None
-        self.safe_count = 0
+        self.last_sequence = None
         self.hit_count = 0
 
     def start_edge(self):
-        """Reset the gate for a new EDGE_TRAVEL phase."""
-        self.started_at = self._time()
-        self.safe_count = 0
+        """Ignore cache published before the current EDGE_TRAVEL phase."""
+        self.last_sequence = None
         self.hit_count = 0
+        if self.sensor is not None:
+            self.last_sequence = self.sensor.read_snapshot()[0]
 
     def check_blocked(self):
-        """Return True only when this edge has a confirmed obstacle.
-
-        This method is intentionally called only by EDGE_TRAVEL. Turning,
-        leaving a node, searching for a line, and recovery never read the
-        ultrasonic cache through this gate.
-        """
-        if self.sensor is None or self.started_at is None:
+        """Return True after confirmed new readings report an obstacle."""
+        if self.sensor is None or self.last_sequence is None:
             return False
 
-        if self._time() - self.started_at < self.arm_delay:
+        sequence, _distance, obstructed = self.sensor.read_snapshot()
+        if sequence <= self.last_sequence:
             return False
+        self.last_sequence = sequence
 
-        if not self.sensor.is_obstructed():
-            self.safe_count += 1
-            self.hit_count = 0
-            return False
-
-        if self.safe_count < self.clear_samples:
+        if not obstructed:
             self.hit_count = 0
             return False
 
@@ -159,9 +138,8 @@ class EdgeFollower:
     node_confirm_samples: Node samples required to enter a node; default 1 means
         one matching reading is accepted immediately.
     node_center_seconds: Short forward push after confirming a node.
-    obstacle_arm_delay: Delay before obstacle readings can block an edge.
-    obstacle_clear_samples: Safe readings required before obstacle confirmation.
-    obstacle_confirm_samples: Obstacle readings required before blocking an edge.
+    obstacle_confirm_samples: Fresh filtered obstacle readings required before
+        blocking an edge.
     line_acquire_timeout: Maximum protected leave/search time.
     line_lost_timeout: Maximum all-white line loss time during travel.
     reverse_speed: PWM speed used when backing straight along the current edge.
@@ -185,9 +163,7 @@ class EdgeFollower:
         node_clear_samples=3,
         node_confirm_samples=1,
         node_center_seconds=0.08,
-        obstacle_arm_delay=0.3,
-        obstacle_clear_samples=1,
-        obstacle_confirm_samples=2,
+        obstacle_confirm_samples=1,
         line_acquire_timeout=3.0,
         line_lost_timeout=5.0,
         reverse_speed=15,
@@ -248,10 +224,7 @@ class EdgeFollower:
         self._sleep = sleep_fn if sleep_fn is not None else time.sleep
         self.obstacle_gate = ObstacleGate(
             sensor=obstacle_sensor,
-            arm_delay=obstacle_arm_delay,
-            clear_samples=obstacle_clear_samples,
             confirm_samples=obstacle_confirm_samples,
-            time_fn=self._time,
         )
 
     def _log(self, message):
@@ -662,7 +635,7 @@ class EdgeFollower:
                     )
                     last_summary = summary
 
-            if self._stable_tracking(result) and self.obstacle_gate.check_blocked():
+            if self.obstacle_gate.check_blocked():
                 self.motor.brake()
                 self._log("edge_travel blocked_by_obstacle")
                 return EdgeExecutionResult(
@@ -882,13 +855,6 @@ class EdgeFollower:
         # Real sleep commonly wakes slightly after finish_at. Only a deadline that
         # truncated the requested motion is a timeout; scheduler overshoot is not.
         return requested_finish_at <= deadline
-
-    def _stable_tracking(self, result):
-        return (
-            result.line_seen
-            and not result.is_node
-            and result.action != ACTION_SEARCH_LEFT
-        )
 
     def _update_line_loss(self, result, lost_since):
         if result.line_seen:

@@ -18,8 +18,8 @@
 ```text
 只有在可信节点上才能选边。
 只有稳定进入下一个节点后才能更新 current_node。
-只有边中稳定巡线时才能把 planned_edge 封锁。
-转向、出点、找线、恢复期间都不能根据超声封新边。
+只有进入边中巡线阶段后才能把 planned_edge 封锁。
+转向、出点、恢复期间不能根据超声封新边；边中找线仍须停车避障。
 ```
 
 ## 2. 模块职责
@@ -128,11 +128,11 @@ planned_edge = frozenset({current_node, next_node})
 
 超声只产生“车头前方近距离有物体”的事实，不知道 `A2-A3`、`A2-B2` 这些边名。封哪条边完全由当前 `planned_edge` 决定。
 
-因此必须保证：只有当车辆已经稳定进入 `planned_edge` 的边中巡线阶段时，才能相信超声并封这条边。
+因此必须保证：只有车辆进入 `planned_edge` 的边中巡线阶段后，才能根据超声封这条边。
 
 ### 3.3 超声缓存门控
 
-后台超声缓存可能滞后，也可能在转向时扫到上一条边附近的障碍。不要直接清空 `ultrasonic.obstacle_detected`，而应在边执行器里做门控。
+后台超声缓存可能滞后，也可能在转向时扫到上一条边附近的障碍。每次完整测距发布时递增 `reading_sequence`，边执行器只接受进入当前边之后发布的新读数。
 
 建议门控对象：
 
@@ -140,27 +140,25 @@ planned_edge = frozenset({current_node, next_node})
 class ObstacleGate:
     def start_edge(self):
         self.hit_count = 0
-        self.safe_count = 0
-        self.started_at = time.monotonic()
+        self.last_sequence = sensor.read_snapshot()[0]
 
     def check_blocked(self):
         ...
 ```
 
-新边开始后，障碍门控必须重新计数：
+新边开始后，障碍门控必须重新记录缓存序号：
 
-- 转向、出点、找线、恢复阶段不读超声。
-- 进入边中后先等待 `arm_delay`。
-- 或者先要求连续 `safe_clear_samples` 次读到安全。
-- 之后连续 `obstacle_confirm_samples` 次读到障碍，才确认当前计划边被挡。
+- 转向、出点、恢复阶段不根据超声封边。
+- 忽略进入当前边之前发布的旧缓存。
+- 不要求先读到安全；进入边时障碍已经存在也必须停车。
+- 边中丢线找线时仍检查障碍，不能因巡线不稳定关闭安全检测。
+- 只对不同 `reading_sequence` 的新读数计数。
 
 推荐演示参数：
 
 ```text
-obstacle_arm_delay = 0.3 ~ 0.5 秒
-safe_clear_samples = 1 ~ 2
-obstacle_confirm_samples = 2 ~ 3
-threshold = 12 ~ 15 cm
+obstacle_confirm_samples = 1
+threshold = 20 cm
 ```
 
 ## 4. 新状态机
@@ -291,7 +289,7 @@ flowchart TD
 2. 如果仍然是节点读数，继续出点，不允许入点。
 3. 连续 `node_clear_samples` 次不是节点，才认为离开当前节点。
 4. 离开节点后要求看到目标边的线形态，例如内侧至少一路看到线，最好逐步收敛到内侧两路居中。
-5. 如果全白丢线，进入受限找线；找线阶段仍不读超声。
+5. 如果全白丢线，进入受限找线；这是运动状态，仍需执行障碍停车检查。
 
 当前待实机验证的运行参数：
 
@@ -336,12 +334,12 @@ line_acquire_timeout = 2 ~ 4 秒
 
 1. 读取巡线传感器。
 2. 执行基础巡线动作。
-3. 如果处于稳定跟线状态，调用障碍门控。
+3. 无论正常跟线还是边中找线，都调用障碍门控。
 4. 如果障碍门控确认，返回 `blocked_on_planned_edge`。
 5. 如果稳定检测到节点，返回 `reached_next_node`。
 6. 如果丢线超过 `line_lost_timeout`，返回失败。
 
-找线期间不封边。原因是找线时车头方向不可信，超声看到的物体不一定属于当前计划边。
+找线时仍以防碰撞为先；当前软件坐标仍处于同一计划边，因此确认障碍后停止并按该边恢复。
 
 ## 8. 入点逻辑
 
@@ -407,7 +405,7 @@ EDGE_TRAVEL
 -> 进入恢复
 ```
 
-如果 `dynamic_blocked_edges=3`，说明程序在三条不同的计划边上都确认过障碍。新版通过“出点后才 armed、先清安全缓存、连续确认”降低误封概率。
+如果 `dynamic_blocked_edges=3`，说明程序在三条不同的计划边上都确认过障碍。新版通过缓存序号忽略进入当前边之前发布的旧读数，不再依赖“先读到安全”。
 
 ## 10. 恢复回节点逻辑
 
@@ -503,9 +501,7 @@ turn_acquire_timeout = 5.0
 node_clear_samples = 3
 node_confirm_samples = 1
 node_center_seconds = 0.08
-obstacle_arm_delay = 0.3
-obstacle_clear_samples = 1
-obstacle_confirm_samples = 2
+obstacle_confirm_samples = 1
 line_lost_timeout = 5.0
 reverse_speed = 15
 reverse_turn_speed = 20
@@ -517,10 +513,9 @@ reverse_turn_speed = 20
 
 1. 先用 `--blocked-edge A2-A3 --no-ultrasonic` 录静态封边绕路，验证 A* 和转向路线。
 2. 再录动态障碍，固定路线 `A1 -> A3`。
-3. 障碍放在 `A2-A3` 边中后段，不要贴近 `A2` 节点。
-4. 在 `A2` 节点中心面对 `A3` 时，超声读数应大于阈值。
-5. 小车出点后，超声读数再进入阈值内。
-6. 阈值建议从 `12 ~ 15 cm` 调起。
+3. 障碍放在 `A2-A3` 边中，保留实际测得的探测与刹车距离。
+4. 障碍不需要先处于阈值外再进入阈值内；第一条新鲜障碍读数即可停车。
+5. 默认阈值为 `20 cm`，后续只根据静态测距和刹车距离实测调整。
 
 期望表现：
 
@@ -545,8 +540,9 @@ A1 -> A2
 - 转向阶段不读取超声。
 - 出点阶段不读取超声，也不允许入点。
 - 连续 `node_clear_samples` 次非节点后才进入边中。
-- 找线阶段不封边。
-- 边中连续 `obstacle_confirm_samples` 次障碍才返回 `blocked_on_planned_edge`。
+- 找线阶段仍检查障碍并停车。
+- 进入边前的旧超声缓存不能封边。
+- 默认一条新鲜的滤波障碍读数即返回 `blocked_on_planned_edge`。
 - 默认一次节点读数即算入点；可通过 `node_confirm_samples` 提高确认次数。
 - 恢复阶段直接倒车，不执行原地掉头。
 
