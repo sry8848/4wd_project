@@ -90,6 +90,8 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertEqual(options["turn_acquire_timeout"], 5.0)
         self.assertEqual(options["leave_node_min_seconds"], 0.10)
         self.assertEqual(options["node_clear_samples"], 1)
+        self.assertEqual(options["node_center_speed"], 20)
+        self.assertEqual(options["node_center_seconds"], 0.10)
         self.assertEqual(options["reverse_speed"], 5)
         self.assertEqual(options["edge_max_seconds"], 20)
         self.assertEqual(options["recovery_max_seconds"], 8)
@@ -116,6 +118,7 @@ class GridNavigationToolTest(unittest.TestCase):
             "leave_node_min_seconds",
             "node_clear_samples",
             "node_confirm_samples",
+            "node_center_speed",
             "node_center_seconds",
             "obstacle_confirm_samples",
             "line_acquire_timeout",

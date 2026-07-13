@@ -150,7 +150,8 @@ class EdgeFollower:
     node_clear_samples: Consecutive non-node line samples required to leave.
     node_confirm_samples: Node samples required to enter a node; default 1 means
         one matching reading is accepted immediately.
-    node_center_seconds: Short forward push after confirming a node.
+    node_center_speed: PWM speed for the forward node-centering push.
+    node_center_seconds: Duration of the forward node-centering push.
     obstacle_confirm_samples: Fresh single-shot obstacle readings required before
         blocking an edge.
     line_acquire_timeout: Maximum protected leave/search time.
@@ -175,7 +176,8 @@ class EdgeFollower:
         leave_node_min_seconds=0.10,
         node_clear_samples=3,
         node_confirm_samples=1,
-        node_center_seconds=0.08,
+        node_center_speed=20,
+        node_center_seconds=0.10,
         obstacle_confirm_samples=2,
         line_acquire_timeout=3.0,
         line_lost_timeout=5.0,
@@ -201,6 +203,8 @@ class EdgeFollower:
             raise ValueError("node_clear_samples must be > 0")
         if node_confirm_samples <= 0:
             raise ValueError("node_confirm_samples must be > 0")
+        if node_center_speed < 0 or node_center_speed > 100:
+            raise ValueError("node_center_speed must be between 0 and 100")
         if node_center_seconds < 0:
             raise ValueError("node_center_seconds must be >= 0")
         if line_acquire_timeout <= 0:
@@ -225,6 +229,7 @@ class EdgeFollower:
         self.leave_node_min_seconds = leave_node_min_seconds
         self.node_clear_samples = node_clear_samples
         self.node_confirm_samples = node_confirm_samples
+        self.node_center_speed = node_center_speed
         self.node_center_seconds = node_center_seconds
         self.line_acquire_timeout = line_acquire_timeout
         self.line_lost_timeout = line_lost_timeout
@@ -815,9 +820,13 @@ class EdgeFollower:
         """
         completed = True
         if self.node_center_seconds > 0:
+            self._log(
+                f"node_center start speed={self.node_center_speed} "
+                f"seconds={self.node_center_seconds:.2f}"
+            )
             self.motor.forward(
-                self.line_follower.forward_speed,
-                self.line_follower.forward_speed,
+                self.node_center_speed,
+                self.node_center_speed,
             )
             completed = self._wait_while_active(
                 self.node_center_seconds,
@@ -825,6 +834,7 @@ class EdgeFollower:
                 cancel_requested_fn,
             )
         self.motor.brake()
+        self._log(f"node_center stop completed={int(completed)}")
         return completed
 
     def _cancel_requested(self, cancel_requested_fn):

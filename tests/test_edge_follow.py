@@ -301,6 +301,7 @@ class EdgeFollowerTest(unittest.TestCase):
                 NODE_READING,
                 NODE_READING,
             ],
+            node_center_speed=23,
             node_center_seconds=0.08,
             time_fn=clock.monotonic,
             sleep_fn=clock.sleep,
@@ -313,6 +314,7 @@ class EdgeFollowerTest(unittest.TestCase):
         )
 
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+        self.assertIn(("forward", 23, 23), self.motor.calls)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 
     def test_node_center_deadline_is_reported_as_timeout_not_cancellation(self):
@@ -444,6 +446,8 @@ class EdgeFollowerTest(unittest.TestCase):
             obstructed_values=[True, True, True],
             reverse_speed=12,
             reverse_turn_speed=34,
+            node_center_speed=23,
+            node_center_seconds=0.1,
         )
 
         result = follower.recover_to_start_node(
@@ -458,6 +462,7 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertEqual(result.final_heading, HEADING_EAST)
         self.assertEqual(spin_calls, [])
         self.assertIn(("backward", 12, 12), self.motor.calls)
+        self.assertIn(("forward", 23, 23), self.motor.calls)
         self.assertEqual(self.obstacle_sensor.calls, 0)
         self.assertEqual(self.motor.calls[-1], ("brake",))
 

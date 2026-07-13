@@ -399,13 +399,14 @@ left_inner and right_inner and (left_outer or right_outer)
 node_confirm_samples = 1，单次检测到节点即确认
 ```
 
-确认后以当前 `forward_speed` 轻推居中：
+确认后不再复用边上巡线速度，而是以独立节点居中速度向车头方向短暂前推：
 
 ```text
-node_center_seconds = 0.08 秒
+node_center_speed = 20
+node_center_seconds = 0.10 秒
 ```
 
-然后停车并返回 `reached_next_node`。只有这时 `GridNavigator` 才能执行：
+正常前进入点和倒车恢复入点共用这一动作，使车体中心而不是前置巡线传感器停在交叉点中心。然后停车并返回 `reached_next_node`。只有这时 `GridNavigator` 才能执行：
 
 ```python
 current_node = next_node
@@ -452,7 +453,7 @@ EDGE_TRAVEL
 4. 左侧见黑时执行 `backward(20, 0)`，右侧见黑时执行 `backward(0, 20)`；修正只作用于当前一轮，下一轮恢复全白后立即恢复直线倒车。
 5. 沿原线退回起点节点。
 6. 稳定入点确认。
-7. 停车。
+7. 以 `node_center_speed=20` 向车头方向前推 `0.10s` 居中后停车。
 8. 返回 `recovered_to_start_node`。
 
 实车已确认普通边居中时主要是四路全白，因此倒车不能把首次全白解释为丢线，也不能在全白后持续复用上一次弯曲修正。四路传感器无法区分“黑线位于中间”和“完全离开黑线”，所以倒车恢复不再单独使用全白丢线计时，统一由 `recovery_max_seconds=8` 限制最长运动时间；超时必须刹车并返回 `recovery_failed`。
@@ -520,7 +521,8 @@ canceled
 | `leave_node_min_seconds` | `0.10s` | 最短出点时间 |
 | `node_clear_samples` | `1` | 出点全白确认次数 |
 | `node_confirm_samples` | `1` | 入点确认次数 |
-| `node_center_seconds` | `0.08s` | 入点后的短暂前推 |
+| `node_center_speed` | `20` | 入点后向车头方向前推的速度 |
+| `node_center_seconds` | `0.10s` | 入点后向车头方向前推的时间 |
 | `obstacle_confirm_samples` | `2` | 连续新鲜障碍读数确认次数 |
 | `ultrasonic_threshold_cm` | `20cm` | 动态障碍阈值 |
 | `ultrasonic_enabled` | `True` | 网页实车启用前向障碍检测 |
