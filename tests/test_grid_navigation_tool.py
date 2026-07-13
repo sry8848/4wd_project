@@ -77,7 +77,7 @@ class GridNavigationToolTest(unittest.TestCase):
         captured, _hardware, _output = self.run_tool()
         options = captured["kwargs"]
 
-        self.assertEqual(options["forward_speed"], 20)
+        self.assertEqual(options["forward_speed"], 15)
         self.assertEqual(options["line_turn_speed"], 80)
         self.assertEqual(options["line_left_turn_speed"], 80)
         self.assertEqual(options["line_right_turn_speed"], 100)
@@ -87,6 +87,7 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertEqual(options["right_turn_rough_seconds"], 0.3)
         self.assertEqual(options["uturn_rough_seconds"], 0.8)
         self.assertEqual(options["turn_acquire_timeout"], 5.0)
+        self.assertEqual(options["leave_node_min_seconds"], 0.10)
         self.assertEqual(options["edge_max_seconds"], 20)
         self.assertEqual(options["recovery_max_seconds"], 8)
         self.assertEqual(options["ultrasonic_threshold_cm"], 20)

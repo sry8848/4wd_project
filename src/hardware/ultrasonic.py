@@ -167,13 +167,19 @@ class UltrasonicSensor:
     # ------------------------------------------------------------------
 
     def _monitor_loop(self):
+        """Publish each single distance measurement without batch filtering.
+
+        Each loop performs one trigger/echo measurement, publishes its result
+        atomically, then leaves a short gap before the next ultrasonic pulse.
+        A ``-1`` timeout remains a non-obstacle reading, matching existing logic.
+        """
         while self._monitoring:
-            d = self.read_filtered()
+            d = self.read_distance()
             with self._lock:
                 self.last_distance = d
                 self.obstacle_detected = (d > 0 and d < self.threshold)
                 self.reading_sequence += 1
-            time.sleep(0.2)
+            time.sleep(0.06)
 
     def get_cached_reading(self):
         """Return one atomic background reading snapshot.
@@ -190,8 +196,7 @@ class UltrasonicSensor:
             )
 
     def start_monitoring(self):
-        """Launch a daemon thread that continuously updates
-        ``obstacle_detected`` and ``last_distance``."""
+        """Launch a daemon thread that publishes every single measurement."""
         if self._monitoring:
             return
         self._monitoring = True

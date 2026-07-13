@@ -38,7 +38,7 @@ def parse_args():
         default=[],
         help="static blocked edge like A1-A2; can be passed multiple times",
     )
-    parser.add_argument("--forward-speed", type=int, default=20)
+    parser.add_argument("--forward-speed", type=int, default=15)
     parser.add_argument("--line-turn-speed", type=int, default=80)
     parser.add_argument(
         "--line-left-turn-speed",
@@ -58,7 +58,7 @@ def parse_args():
     parser.add_argument("--right-turn-rough-seconds", type=float, default=0.3)
     parser.add_argument("--uturn-rough-seconds", type=float, default=0.8)
     parser.add_argument("--turn-acquire-timeout", type=float, default=5.0)
-    parser.add_argument("--leave-node-min-seconds", type=float, default=0.25)
+    parser.add_argument("--leave-node-min-seconds", type=float, default=0.10)
     parser.add_argument("--node-clear-samples", type=int, default=3)
     parser.add_argument("--node-confirm-samples", type=int, default=1)
     parser.add_argument("--node-center-seconds", type=float, default=0.08)
