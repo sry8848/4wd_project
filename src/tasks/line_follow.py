@@ -142,11 +142,12 @@ class LineFollower:
         reading = self.sensor.read()
         return self.apply_reading(reading)
 
-    def apply_reading(self, reading):
+    def apply_reading(self, reading, search_left=True):
         """根据已读取的传感器结果执行一次巡线动作。
 
         参数说明：
         reading: src.hardware.line_sensor.LineReading 实例。
+        search_left: 四路全白时是否向左找线；False 表示向右找线。
         """
         action = decide_line_action(reading)
 
@@ -162,9 +163,12 @@ class LineFollower:
         elif action == ACTION_RIGHT:
             self.motor.right(self.right_turn_speed, 0)
             motor_command = f"right({self.right_turn_speed},0)"
-        else:
+        elif search_left:
             self.motor.spin_left(self.search_speed, self.search_speed)
             motor_command = f"spin_left({self.search_speed},{self.search_speed})"
+        else:
+            self.motor.spin_right(self.search_speed, self.search_speed)
+            motor_command = f"spin_right({self.search_speed},{self.search_speed})"
 
         if self.debug_output is not None:
             self.debug_output.write(

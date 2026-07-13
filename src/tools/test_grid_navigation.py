@@ -54,9 +54,10 @@ def parse_args():
     )
     parser.add_argument("--search-speed", type=int, default=5)
     parser.add_argument("--spin-speed", type=int, default=30)
-    parser.add_argument("--left-turn-rough-seconds", type=float, default=0.6)
-    parser.add_argument("--right-turn-rough-seconds", type=float, default=0.5)
-    parser.add_argument("--uturn-rough-seconds", type=float, default=1.2)
+    parser.add_argument("--left-turn-rough-seconds", type=float, default=0.4)
+    parser.add_argument("--right-turn-rough-seconds", type=float, default=0.3)
+    parser.add_argument("--uturn-rough-seconds", type=float, default=0.8)
+    parser.add_argument("--turn-acquire-timeout", type=float, default=5.0)
     parser.add_argument("--leave-node-min-seconds", type=float, default=0.25)
     parser.add_argument("--node-clear-samples", type=int, default=3)
     parser.add_argument("--node-confirm-samples", type=int, default=1)
@@ -162,6 +163,7 @@ def main():
             left_turn_rough_seconds=args.left_turn_rough_seconds,
             right_turn_rough_seconds=args.right_turn_rough_seconds,
             uturn_rough_seconds=args.uturn_rough_seconds,
+            turn_acquire_timeout=args.turn_acquire_timeout,
             leave_node_min_seconds=args.leave_node_min_seconds,
             node_clear_samples=args.node_clear_samples,
             node_confirm_samples=args.node_confirm_samples,

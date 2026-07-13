@@ -279,9 +279,11 @@ flowchart TD
 `ALIGN_TO_EDGE`：
 
 1. 根据 `current_heading` 和 `target_heading` 计算左转、右转或掉头。
-2. 按对应方向粗转一小段时间。
+2. 按对应方向执行故意不足的预转向。
 3. 粗转期间不读超声、不封边、不认节点。
-4. 粗转完成后停车，进入 `LEAVE_NODE`。
+4. 预转完成后，以速度5沿计划方向精细找线。
+5. 已经居中压到普通线时立即接受；否则先离开旧节点，再接受第一次重新看到的线。
+6. 找到目标线后停车并进入 `LEAVE_NODE`；5秒内找不到则返回 `turn_failed`。
 
 `LEAVE_NODE`：
 
@@ -291,16 +293,20 @@ flowchart TD
 4. 离开节点后要求看到目标边的线形态，例如内侧至少一路看到线，最好逐步收敛到内侧两路居中。
 5. 如果全白丢线，进入受限找线；找线阶段仍不读超声。
 
-当前小车在 `spin_speed = 30` 下的实测参数：
+当前待实机验证的运行参数：
 
 ```text
-left_turn_rough_seconds = 0.6 秒
-right_turn_rough_seconds = 0.5 秒
-uturn_rough_seconds = 1.2 秒（当前固定左旋）
+left_turn_rough_seconds = 0.4 秒
+right_turn_rough_seconds = 0.3 秒
+uturn_rough_seconds = 0.8 秒（当前固定左旋）
+turn_acquire_timeout = 5.0 秒
+search_speed = 5
 leave_node_min_seconds = 0.20 ~ 0.40 秒
 node_clear_samples = 3
 line_acquire_timeout = 2 ~ 4 秒
 ```
+
+完整90°和180°实测时间仍是 `0.6/0.5/1.2/1.1` 秒；这里的 `0.4/0.3/0.8` 是故意不足的预转向，不表示已经重新测得完整角度。
 
 ## 6. 出点逻辑
 
@@ -472,6 +478,7 @@ recovery_failed
 --left-turn-rough-seconds
 --right-turn-rough-seconds
 --uturn-rough-seconds
+--turn-acquire-timeout
 --line-acquire-timeout
 --leave-node-min-seconds
 --node-clear-samples
@@ -489,6 +496,10 @@ recovery_failed
 演示优先默认值：
 
 ```text
+left_turn_rough_seconds = 0.4
+right_turn_rough_seconds = 0.3
+uturn_rough_seconds = 0.8
+turn_acquire_timeout = 5.0
 node_clear_samples = 3
 node_confirm_samples = 1
 node_center_seconds = 0.08

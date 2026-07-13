@@ -83,6 +83,10 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertEqual(options["line_right_turn_speed"], 100)
         self.assertEqual(options["search_speed"], 5)
         self.assertEqual(options["spin_speed"], 30)
+        self.assertEqual(options["left_turn_rough_seconds"], 0.4)
+        self.assertEqual(options["right_turn_rough_seconds"], 0.3)
+        self.assertEqual(options["uturn_rough_seconds"], 0.8)
+        self.assertEqual(options["turn_acquire_timeout"], 5.0)
         self.assertEqual(options["edge_max_seconds"], 20)
         self.assertEqual(options["recovery_max_seconds"], 8)
         self.assertEqual(options["ultrasonic_threshold_cm"], 20)
@@ -98,6 +102,8 @@ class GridNavigationToolTest(unittest.TestCase):
                 "0.5",
                 "--uturn-rough-seconds",
                 "1.1",
+                "--turn-acquire-timeout",
+                "2.5",
                 "--obstacle-confirm-samples",
                 "3",
             ]
@@ -110,6 +116,7 @@ class GridNavigationToolTest(unittest.TestCase):
         self.assertEqual(options["left_turn_rough_seconds"], 0.6)
         self.assertEqual(options["right_turn_rough_seconds"], 0.5)
         self.assertEqual(options["uturn_rough_seconds"], 1.1)
+        self.assertEqual(options["turn_acquire_timeout"], 2.5)
         self.assertEqual(options["obstacle_confirm_samples"], 3)
 
     def test_no_reverse_radar_is_forwarded(self):

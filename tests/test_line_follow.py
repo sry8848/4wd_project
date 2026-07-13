@@ -43,6 +43,9 @@ class FakeMotor:
     def spin_left(self, left_speed, right_speed):
         self.calls.append(("spin_left", left_speed, right_speed))
 
+    def spin_right(self, left_speed, right_speed):
+        self.calls.append(("spin_right", left_speed, right_speed))
+
     def brake(self):
         self.calls.append(("brake",))
 
@@ -219,6 +222,19 @@ class LineFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.action, ACTION_SEARCH_LEFT)
         self.assertEqual(motor.calls, [("spin_left", 6, 6)])
+
+    def test_apply_reading_can_search_right_when_turn_context_requires_it(self):
+        sensor = FakeSensor([])
+        motor = FakeMotor()
+        follower = LineFollower(sensor, motor, search_speed=6)
+
+        result = follower.apply_reading(
+            LineReading(False, False, False, False),
+            search_left=False,
+        )
+
+        self.assertEqual(result.action, ACTION_SEARCH_LEFT)
+        self.assertEqual(motor.calls, [("spin_right", 6, 6)])
 
 
 if __name__ == "__main__":

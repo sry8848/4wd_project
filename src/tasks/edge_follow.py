@@ -150,9 +150,10 @@ class EdgeFollower:
         motor, and speed attributes.
     obstacle_sensor: Optional ultrasonic cache wrapper used only in EDGE_TRAVEL.
     turn_speed: PWM speed used by coarse turns.
-    left_turn_rough_seconds: Calibrated coarse 90-degree left-turn duration.
-    right_turn_rough_seconds: Calibrated coarse 90-degree right-turn duration.
-    uturn_rough_seconds: Calibrated left-spin 180-degree turn duration.
+    left_turn_rough_seconds: Deliberately short left pre-turn duration.
+    right_turn_rough_seconds: Deliberately short right pre-turn duration.
+    uturn_rough_seconds: Deliberately short left-spin U-turn duration.
+    turn_acquire_timeout: Maximum directional fine-search time after a pre-turn.
     leave_node_min_seconds: Minimum protected time before leaving can succeed.
     node_clear_samples: Consecutive non-node line samples required to leave.
     node_confirm_samples: Node samples required to enter a node; default 1 means
@@ -176,9 +177,10 @@ class EdgeFollower:
         line_follower,
         obstacle_sensor=None,
         turn_speed=30,
-        left_turn_rough_seconds=0.6,
-        right_turn_rough_seconds=0.5,
-        uturn_rough_seconds=1.2,
+        left_turn_rough_seconds=0.4,
+        right_turn_rough_seconds=0.3,
+        uturn_rough_seconds=0.8,
+        turn_acquire_timeout=5.0,
         leave_node_min_seconds=0.25,
         node_clear_samples=3,
         node_confirm_samples=1,
@@ -202,6 +204,8 @@ class EdgeFollower:
             or uturn_rough_seconds < 0
         ):
             raise ValueError("rough turn seconds must be >= 0")
+        if turn_acquire_timeout <= 0:
+            raise ValueError("turn_acquire_timeout must be > 0")
         if leave_node_min_seconds < 0:
             raise ValueError("leave_node_min_seconds must be >= 0")
         if node_clear_samples <= 0:
@@ -228,6 +232,7 @@ class EdgeFollower:
         self.left_turn_rough_seconds = left_turn_rough_seconds
         self.right_turn_rough_seconds = right_turn_rough_seconds
         self.uturn_rough_seconds = uturn_rough_seconds
+        self.turn_acquire_timeout = turn_acquire_timeout
         self.leave_node_min_seconds = leave_node_min_seconds
         self.node_clear_samples = node_clear_samples
         self.node_confirm_samples = node_confirm_samples
@@ -283,12 +288,13 @@ class EdgeFollower:
             f"edge_exec start current={current_heading} target={target_heading} "
             f"max_seconds={max_seconds}"
         )
-        if not self._align_to_heading(
+        aligned, turn_search_left = self._align_to_heading(
             current_heading,
             target_heading,
             deadline,
             cancel_requested_fn,
-        ):
+        )
+        if not aligned:
             if self._cancel_requested(cancel_requested_fn):
                 return EdgeExecutionResult(EDGE_CANCELED)
             self.motor.brake()
@@ -296,7 +302,11 @@ class EdgeFollower:
             self._log(f"edge_exec result status={result.status} reason={result.reason}")
             return result
 
-        if not self._leave_node(deadline, cancel_requested_fn):
+        if not self._leave_node(
+            deadline,
+            cancel_requested_fn,
+            search_left=turn_search_left,
+        ):
             if self._cancel_requested(cancel_requested_fn):
                 return EdgeExecutionResult(EDGE_CANCELED)
             self.motor.brake()
@@ -392,12 +402,12 @@ class EdgeFollower:
         deadline,
         cancel_requested_fn,
     ):
-        # Step 1: Coarse turn only. No ultrasonic, no node recognition here.
+        # Step 1: Deliberate under-turn, then directional sensor acquisition.
         if self._cancel_requested(cancel_requested_fn):
-            return False
+            return False, None
         if current_heading is None or target_heading is None:
             self._log("align skip (heading unknown)")
-            return self._time() < deadline
+            return self._time() < deadline, None
         if current_heading not in _HEADINGS or target_heading not in _HEADINGS:
             raise ValueError("heading must be north/east/south/west")
 
@@ -407,39 +417,52 @@ class EdgeFollower:
 
         if diff == 0:
             self._log(f"align skip already_facing={target_heading}")
-            return self._time() < deadline
+            return self._time() < deadline, None
         if diff == 1:
             self._log(
                 f"align turn=right seconds={self.right_turn_rough_seconds} "
                 f"from={current_heading} to={target_heading}"
             )
-            return self._rough_turn(
+            return self._turn_and_acquire(
                 left=False,
                 seconds=self.right_turn_rough_seconds,
                 deadline=deadline,
                 cancel_requested_fn=cancel_requested_fn,
-            )
+            ), False
         if diff == 2:
             self._log(
                 f"align turn=uturn_left seconds={self.uturn_rough_seconds} "
                 f"from={current_heading} to={target_heading}"
             )
-            return self._rough_turn(
+            return self._turn_and_acquire(
                 left=True,
                 seconds=self.uturn_rough_seconds,
                 deadline=deadline,
                 cancel_requested_fn=cancel_requested_fn,
-            )
+            ), True
         self._log(
             f"align turn=left seconds={self.left_turn_rough_seconds} "
             f"from={current_heading} to={target_heading}"
         )
-        return self._rough_turn(
+        return self._turn_and_acquire(
             left=True,
             seconds=self.left_turn_rough_seconds,
             deadline=deadline,
             cancel_requested_fn=cancel_requested_fn,
-        )
+        ), True
+
+    def _turn_and_acquire(self, left, seconds, deadline, cancel_requested_fn):
+        """Run one bounded pre-turn and acquire the next line in that direction.
+
+        Parameters:
+        left: True for left rotation, False for right rotation.
+        seconds: Open-loop pre-turn duration, deliberately shorter than the target.
+        deadline: Absolute deadline of the whole edge operation.
+        cancel_requested_fn: Optional callback returning True when motion must stop.
+        """
+        if not self._rough_turn(left, seconds, deadline, cancel_requested_fn):
+            return False
+        return self._acquire_turn_line(left, deadline, cancel_requested_fn)
 
     def _rough_turn(self, left, seconds, deadline, cancel_requested_fn):
         if self._time() >= deadline or self._cancel_requested(cancel_requested_fn):
@@ -458,7 +481,80 @@ class EdgeFollower:
         self.motor.brake()
         return self._time() < deadline
 
-    def _leave_node(self, deadline, cancel_requested_fn):
+    def _acquire_turn_line(self, left, deadline, cancel_requested_fn):
+        """Fine-turn in the planned direction until the target line is acquired.
+
+        Parameters:
+        left: True to search left, False to search right.
+        deadline: Absolute deadline of the whole edge operation.
+        cancel_requested_fn: Optional callback returning True when motion must stop.
+
+        Steps:
+        Accept a centered ordinary line immediately. Otherwise ignore the old node,
+        wait until the sensors clear it, and stop on the first line seen afterward.
+        """
+        started_at = self._time()
+        finish_at = min(started_at + self.turn_acquire_timeout, deadline)
+        cleared_old_line = False
+        direction = "left" if left else "right"
+        last_summary = None
+        self._log(
+            f"turn_acquire start direction={direction} "
+            f"max_seconds={self.turn_acquire_timeout}"
+        )
+
+        while self._time() < finish_at:
+            if self._cancel_requested(cancel_requested_fn):
+                return False
+
+            reading = self.line_follower.sensor.read()
+            line_seen = is_line_seen(reading)
+            node_seen = is_at_node(reading)
+            centered = is_centered_line(reading)
+            action = decide_line_action(reading)
+            result = LineStepResult(reading, action, node_seen, line_seen, centered)
+            summary = _reading_summary(result)
+            if summary != last_summary:
+                self._log(f"turn_acquire {summary} cleared={int(cleared_old_line)}")
+                last_summary = summary
+
+            if (centered and not node_seen) or (cleared_old_line and line_seen):
+                self.motor.brake()
+                elapsed = self._time() - started_at
+                self._log(
+                    f"turn_acquire success direction={direction} elapsed={elapsed:.3f}"
+                )
+                return True
+
+            if not line_seen:
+                cleared_old_line = True
+
+            if left:
+                self.motor.spin_left(
+                    self.line_follower.search_speed,
+                    self.line_follower.search_speed,
+                )
+            else:
+                self.motor.spin_right(
+                    self.line_follower.search_speed,
+                    self.line_follower.search_speed,
+                )
+            self._sleep(self.delay_seconds)
+
+        self.motor.brake()
+        self._log(
+            f"turn_acquire failed direction={direction} last={last_summary}"
+        )
+        return False
+
+    def _leave_node(self, deadline, cancel_requested_fn, search_left=None):
+        """Leave the current node while preserving the planned search direction.
+
+        Parameters:
+        deadline: Absolute deadline of the whole edge operation.
+        cancel_requested_fn: Optional callback returning True when motion must stop.
+        search_left: Turn direction for all-white recovery; None keeps left search.
+        """
         # Step 2: Protected leave. Node readings cannot mean "next node" here.
         self._log("leave_node start")
         started_at = self._time()
@@ -468,7 +564,10 @@ class EdgeFollower:
             if self._cancel_requested(cancel_requested_fn):
                 return False
             reading = self.line_follower.sensor.read()
-            result = self.line_follower.apply_reading(reading)
+            result = self.line_follower.apply_reading(
+                reading,
+                search_left=search_left is not False,
+            )
             summary = _reading_summary(result)
             if summary != last_summary:
                 self._log(

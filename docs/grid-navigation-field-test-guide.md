@@ -12,9 +12,9 @@ B1 -- B2 -- B3 -- B4 -- B5
 C1 -- C2 -- C3 -- C4 -- C5
 ```
 
-## 当前唯一实测基线
+## 当前待验证转向基线
 
-以下参数由用户确认已在当前小车上完成网格导航，代码默认值、手动工具和网页实车模式必须保持一致：
+以下参数是本轮准备验证的统一运行值；代码默认值、手动工具和网页实车模式必须保持一致：
 
 ```text
 forward-speed = 20
@@ -23,15 +23,16 @@ line-left-turn-speed = 80
 line-right-turn-speed = 100
 search-speed = 5
 spin-speed = 30
-left-turn-rough-seconds = 0.6
-right-turn-rough-seconds = 0.5
-uturn-rough-seconds = 1.2（当前固定左旋）
+left-turn-rough-seconds = 0.4
+right-turn-rough-seconds = 0.3
+uturn-rough-seconds = 0.8（当前固定左旋）
+turn-acquire-timeout = 5.0
 edge-timeout = 20
 recovery-timeout = 8
 threshold = 20
 ```
 
-已测得右旋 180° 为 `1.1` 秒，但当前掉头算法固定左旋，所以不作为运行参数。改变速度、电池、轮胎或场地后应重新校准并新增记录，不能覆盖本基线的事实来源。
+实测完整转向仍是左90°约 `0.6` 秒、右90°约 `0.5` 秒、左180°约 `1.2` 秒、右180°约 `1.1` 秒。当前运行值故意缩短为预转向，随后以速度5沿计划方向精细找线；这些新运行值必须通过本轮实机验证，不能写成已经验证的事实。
 
 ## 1. 测试总原则
 
@@ -50,9 +51,10 @@ threshold = 20
 
 在树莓派项目目录执行：
 
+使用 WinSCP 将本地最新 `src/` 覆盖到 `/home/pi/4wd_project/src/`，树莓派上不执行 Git 命令。随后进入项目目录：
+
 ```bash
 cd /home/pi/4wd_project
-git pull --rebase origin main
 ```
 
 测试前确认：
@@ -116,9 +118,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-right-turn-speed 100 \
   --search-speed 5 \
   --spin-speed 30 \
-  --left-turn-rough-seconds 0.6 \
-  --right-turn-rough-seconds 0.5 \
-  --uturn-rough-seconds 1.2 \
+  --left-turn-rough-seconds 0.4 \
+  --right-turn-rough-seconds 0.3 \
+  --uturn-rough-seconds 0.8 \
+  --turn-acquire-timeout 5 \
   --edge-timeout 20 \
   --recovery-timeout 6 \
   --no-ultrasonic \
@@ -183,9 +186,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-right-turn-speed 100 \
   --search-speed 5 \
   --spin-speed 30 \
-  --left-turn-rough-seconds 0.6 \
-  --right-turn-rough-seconds 0.5 \
-  --uturn-rough-seconds 1.2 \
+  --left-turn-rough-seconds 0.4 \
+  --right-turn-rough-seconds 0.3 \
+  --uturn-rough-seconds 0.8 \
+  --turn-acquire-timeout 5 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
   --no-ultrasonic \
@@ -234,9 +238,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-right-turn-speed 100 \
   --search-speed 5 \
   --spin-speed 30 \
-  --left-turn-rough-seconds 0.6 \
-  --right-turn-rough-seconds 0.5 \
-  --uturn-rough-seconds 1.2 \
+  --left-turn-rough-seconds 0.4 \
+  --right-turn-rough-seconds 0.3 \
+  --uturn-rough-seconds 0.8 \
+  --turn-acquire-timeout 5 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
   --no-ultrasonic \
@@ -262,9 +267,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-right-turn-speed 100 \
   --search-speed 5 \
   --spin-speed 30 \
-  --left-turn-rough-seconds 0.6 \
-  --right-turn-rough-seconds 0.5 \
-  --uturn-rough-seconds 1.2 \
+  --left-turn-rough-seconds 0.4 \
+  --right-turn-rough-seconds 0.3 \
+  --uturn-rough-seconds 0.8 \
+  --turn-acquire-timeout 5 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
   --threshold 20 \
@@ -295,9 +301,10 @@ python3 -m src.tools.test_grid_navigation \
   --line-right-turn-speed 100 \
   --search-speed 5 \
   --spin-speed 30 \
-  --left-turn-rough-seconds 0.6 \
-  --right-turn-rough-seconds 0.5 \
-  --uturn-rough-seconds 1.2 \
+  --left-turn-rough-seconds 0.4 \
+  --right-turn-rough-seconds 0.3 \
+  --uturn-rough-seconds 0.8 \
+  --turn-acquire-timeout 5 \
   --reverse-speed 15 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \

@@ -10,6 +10,7 @@ from src.tasks.edge_follow import (
     EDGE_RECOVERED_TO_START_NODE,
     EDGE_RECOVERY_FAILED,
     EDGE_TIMEOUT,
+    EDGE_TURN_FAILED,
     EdgeFollower,
 )
 from src.tasks.grid_navigation import HEADING_EAST, HEADING_NORTH, HEADING_WEST
@@ -448,6 +449,7 @@ class EdgeFollowerTest(unittest.TestCase):
             [
                 LINE_READING,
                 LINE_READING,
+                LINE_READING,
                 NODE_READING,
                 NODE_READING,
             ],
@@ -464,6 +466,7 @@ class EdgeFollowerTest(unittest.TestCase):
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
         joined = "\n".join(logs)
         self.assertIn("align turn=right seconds=0.5", joined)
+        self.assertIn("turn_acquire success direction=right", joined)
         self.assertIn("leave_node start", joined)
         self.assertIn("edge_travel start", joined)
         self.assertIn("edge_exec result status=reached_next_node", joined)
@@ -472,6 +475,7 @@ class EdgeFollowerTest(unittest.TestCase):
         logs = []
         follower = self.build_follower(
             [
+                LINE_READING,
                 LINE_READING,
                 LINE_READING,
                 NODE_READING,
@@ -489,6 +493,46 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
         self.assertIn("align turn=left seconds=0.6", "\n".join(logs))
+
+    def test_right_turn_fine_search_keeps_turning_right_until_line(self):
+        follower = self.build_follower(
+            [
+                NODE_READING,
+                WHITE_READING,
+                LINE_READING,
+                WHITE_READING,
+                LINE_READING,
+                LINE_READING,
+                NODE_READING,
+                NODE_READING,
+            ],
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_NORTH,
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+        self.assertIn(("spin_right", 8, 8), self.motor.calls)
+        self.assertNotIn(("spin_left", 8, 8), self.motor.calls)
+
+    def test_turn_fine_search_timeout_brakes_instead_of_reaching_opposite_line(self):
+        follower = self.build_follower(
+            [NODE_READING, WHITE_READING, WHITE_READING, WHITE_READING],
+            default_reading=WHITE_READING,
+            turn_acquire_timeout=0.2,
+        )
+
+        result = follower.execute_planned_edge(
+            HEADING_NORTH,
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_TURN_FAILED)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
 
 
 if __name__ == "__main__":
