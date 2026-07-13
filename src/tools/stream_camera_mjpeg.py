@@ -5,6 +5,8 @@
 
 常用命令：
     python3 src/tools/stream_camera_mjpeg.py --device 1
+    python3 src/tools/stream_camera_mjpeg.py \
+        --device-path /dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0
 
 然后在电脑浏览器打开：
     http://树莓派IP:8080/
@@ -16,6 +18,7 @@ import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
+from threading import Event, Lock
 import time
 
 
@@ -30,7 +33,15 @@ def parse_args() -> argparse.Namespace:
     """解析 MJPEG 预览服务参数。"""
 
     parser = argparse.ArgumentParser(description="摄像头 MJPEG 实时预览服务。")
-    parser.add_argument("--device", type=int, default=1, help="OpenCV 摄像头编号。")
+    camera_source = parser.add_mutually_exclusive_group()
+    camera_source.add_argument(
+        "--device", type=int, default=1, help="OpenCV 摄像头编号。"
+    )
+    camera_source.add_argument(
+        "--device-path",
+        type=Path,
+        help="稳定的 V4L2 设备路径，例如 /dev/v4l/by-id/...-video-index0。",
+    )
     parser.add_argument("--host", default="0.0.0.0", help="监听地址。")
     parser.add_argument("--port", type=int, default=8080, help="监听端口。")
     parser.add_argument("--width", type=int, default=640, help="图像宽度。")
@@ -101,14 +112,20 @@ def main() -> int:
         print("未安装 OpenCV，无法启动实时预览。", file=sys.stderr)
         return 1
 
-    camera = cv2.VideoCapture(args.device)
+    selected_device = (
+        str(args.device_path) if args.device_path is not None else args.device
+    )
+    camera = cv2.VideoCapture(selected_device)
     if not camera.isOpened():
-        print(f"无法打开摄像头 {args.device}", file=sys.stderr)
+        print(f"无法打开摄像头 {selected_device}", file=sys.stderr)
         return 1
 
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
     apply_opencv_camera_settings(cv2, camera, build_camera_settings(args))
+    camera_lock = Lock()
+    stop_requested = Event()
+    stream_failed = Event()
 
     class MjpegHandler(BaseHTTPRequestHandler):
         """把 OpenCV 画面输出为浏览器可看的 MJPEG 流。"""
@@ -135,11 +152,21 @@ def main() -> int:
             self.end_headers()
 
             frame_delay = 1.0 / max(1.0, args.fps)
-            while True:
-                ok, frame = camera.read()
+            while not stop_requested.is_set():
+                # 浏览器刷新可能让两个 HTTP 请求短暂并存，必须串行读摄像头。
+                with camera_lock:
+                    ok, frame = camera.read()
                 if not ok or frame is None:
-                    time.sleep(0.05)
-                    continue
+                    if not stream_failed.is_set():
+                        print(
+                            f"摄像头 {selected_device} 读取失败，视频服务将退出。",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        stream_failed.set()
+                        stop_requested.set()
+                        server.shutdown()
+                    break
                 ok, encoded = cv2.imencode(
                     ".jpg",
                     frame,
@@ -169,9 +196,11 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        camera.release()
+        stop_requested.set()
+        with camera_lock:
+            camera.release()
         server.server_close()
-    return 0
+    return 1 if stream_failed.is_set() else 0
 
 
 if __name__ == "__main__":

@@ -75,7 +75,7 @@ def create_grid_navigation_hardware(
     uturn_rough_seconds=0.8,
     turn_acquire_timeout=5.0,
     leave_node_min_seconds=0.10,
-    node_clear_samples=3,
+    node_clear_samples=1,
     node_confirm_samples=1,
     node_center_seconds=0.08,
     obstacle_confirm_samples=1,

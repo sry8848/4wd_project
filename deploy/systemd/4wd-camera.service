@@ -1,0 +1,17 @@
+[Unit]
+Description=Yahboom 4WD camera MJPEG preview
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+SupplementaryGroups=video
+WorkingDirectory=/home/pi/4wd_project
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/pi/4wd_project/src/tools/stream_camera_mjpeg.py --device-path /dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0 --host 0.0.0.0 --port 8080 --width 640 --height 480 --fps 15
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -27,11 +27,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Scan a TYPE:ID QR code with the OpenCV camera."
     )
-    parser.add_argument(
+    camera_source = parser.add_mutually_exclusive_group()
+    camera_source.add_argument(
         "--device",
         type=int,
         default=0,
         help="OpenCV camera device index, usually 0 or 1.",
+    )
+    camera_source.add_argument(
+        "--device-path",
+        type=Path,
+        help="Stable V4L2 camera path, for example /dev/v4l/by-id/...-video-index0.",
     )
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -60,7 +66,10 @@ def main() -> int:
 
     print("QR-code scan started.", flush=True)
     print(f"Expected format: TYPE:ID (example: TOLL:GATE1)", flush=True)
-    print(f"Camera: device={args.device}, {args.width}x{args.height}", flush=True)
+    selected_device = (
+        str(args.device_path) if args.device_path is not None else args.device
+    )
+    print(f"Camera: device={selected_device}, {args.width}x{args.height}", flush=True)
     print(f"Timeout: {args.timeout:.1f} seconds", flush=True)
 
     deadline = time.monotonic() + args.timeout
@@ -70,7 +79,7 @@ def main() -> int:
         recognizer = QRCodeRecognizer()
         # The context manager always releases the camera, including on Ctrl+C.
         with OpenCVCameraSession(
-            device_index=args.device,
+            device_index=selected_device,
             width=args.width,
             height=args.height,
             warmup_frames=5,

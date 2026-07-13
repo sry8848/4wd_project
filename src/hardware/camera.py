@@ -20,6 +20,7 @@ DEFAULT_CAPTURE_DIR = Path("captures")
 DEFAULT_PHOTO_PREFIX = "photo"
 DEFAULT_PHOTO_EXTENSION = ".jpg"
 CameraBackend = str
+CameraDevice = Union[int, str]
 DEFAULT_BACKEND: CameraBackend = "auto"
 
 
@@ -34,7 +35,7 @@ class CaptureResult:
     path: Path
     width: int
     height: int
-    device_index: Optional[int]
+    device_index: Optional[CameraDevice]
     backend: str
     sharpness: Optional[float] = None
 
@@ -80,7 +81,7 @@ class OpenCVCameraSession:
     """Keep one OpenCV camera open while capturing several photos.
 
     Args:
-        device_index: OpenCV camera index, usually 0 or 1 on Raspberry Pi.
+        device_index: OpenCV camera index or stable V4L2 device path.
         width: Optional requested frame width.
         height: Optional requested frame height.
         warmup_frames: Frames discarded once after opening the camera.
@@ -91,7 +92,7 @@ class OpenCVCameraSession:
     def __init__(
         self,
         *,
-        device_index: int = 0,
+        device_index: CameraDevice = 0,
         width: Optional[int] = None,
         height: Optional[int] = None,
         warmup_frames: int = 5,

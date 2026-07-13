@@ -16,11 +16,13 @@
 
 - IP：`192.168.50.1`
 
-- 用户：`root`
+- 用户：pi
 
 - 常用密码：`yahboom`
 
 注意：树莓派上 `python` 指向 Python 2.7。
+
+不要在树莓派上使用git命令，我们只复制src覆盖树莓派文件
 
 # Working Principles
 
