@@ -1,0 +1,6 @@
+# Windows local test environment (Python 3.13).
+-r requirements-rpi.txt
+
+numpy==2.5.1
+opencv-python==5.0.0.93
+pytest==9.1.1

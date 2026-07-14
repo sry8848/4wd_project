@@ -49,16 +49,7 @@ TOLL:GATE1
 
 本次实测该路径指向 `/dev/video0`。数字编号可能在重启或重新插拔后变化，因此测试命令优先使用稳定路径，不把 `/dev/video0` 永久写成硬件事实。
 
-同一摄像头还暴露了 `/dev/video2`；没有证据证明它是本项目需要的采集接口，不要用轮流尝试编号代替设备识别。`/dev/video10` 到 `/dev/video18` 已由 `v4l2-ctl` 识别为树莓派编解码器和 ISP 节点，也不是本测试的目标摄像头。
-
-本车还出现过：
-
-```text
-vcgencmd get_throttled
-throttled=0x50005
-```
-
-这表示当时正在欠压并发生降频。欠压状态下即使偶尔识别成功，也不能作为稳定性验收结果。
+如果出现找不到稳定路径这种情况，大概率是小车电量不足摄像头断开，尝试给小车充电并手动关机重启小车
 
 ## 4. 测试前检查
 
@@ -135,48 +126,37 @@ python3 -m src.tools.test_qr_detect --device-path /dev/v4l/by-id/usb-lihappe8_Co
 
 ## 6. `DIAG` 信息含义
 
-| 字段 | 含义 | 能排除什么 |
-| --- | --- | --- |
-| `device input` | 命令收到的设备参数 | 是否误传了空变量或 `.` |
-| `device resolved` | 稳定路径当前解析到的真实节点 | 当前编号到底是 `/dev/video0` 还是其它节点 |
-| `decoder version` | 实际使用的 OpenCV 版本 | 是否仍在使用旧版 `QRCodeDetector` |
-| `frame width/height/channels` | 第一帧的真实尺寸与通道数 | 请求分辨率是否真正生效 |
-| `frames_read` | 成功读取的帧数 | 摄像头是否持续提供画面 |
-| `corner_frames` | OpenCV 返回二维码角点的帧数 | 检测阶段是否看到疑似二维码 |
-| `decoded_frames` | 成功解出任意文本的帧数 | 解码阶段是否成功 |
-| `invalid_payloads` | 解码成功但不满足 `TYPE:ID` 的唯一文本数 | 是否只是二维码内容格式错误 |
-| `artifact` | 失败证据图片的保存位置 | AI 实际检查的画面证据 |
+| 字段                            | 含义                        | 能排除什么                        |
+| ----------------------------- | ------------------------- | ---------------------------- |
+| `device input`                | 命令收到的设备参数                 | 是否误传了空变量或 `.`                |
+| `device resolved`             | 稳定路径当前解析到的真实节点            | 当前编号到底是 `/dev/video0` 还是其它节点 |
+| `decoder version`             | 实际使用的 OpenCV 版本           | 是否仍在使用旧版 `QRCodeDetector`    |
+| `frame width/height/channels` | 第一帧的真实尺寸与通道数              | 请求分辨率是否真正生效                  |
+| `frames_read`                 | 成功读取的帧数                   | 摄像头是否持续提供画面                  |
+| `corner_frames`               | OpenCV 返回二维码角点的帧数         | 检测阶段是否看到疑似二维码                |
+| `decoded_frames`              | 成功解出任意文本的帧数               | 解码阶段是否成功                     |
+| `invalid_payloads`            | 解码成功但不满足 `TYPE:ID` 的唯一文本数 | 是否只是二维码内容格式错误                |
+| `artifact`                    | 失败证据图片的保存位置               | AI 实际检查的画面证据                 |
 
 `corner_frames=0` 不等于画面里绝对没有二维码；它只表示当前 OpenCV 检测器没有返回角点。必须结合失败图片判断。
 
 ## 7. 输出到排错路径的映射
 
-| 关键输出 | 已确定事实 | 下一步最小动作 |
-| --- | --- | --- |
-| `--device-path does not exist` | Linux 当前没有这个稳定路径 | 执行第 8.1 节 |
-| `must point to a V4L2 character device, got: .` | shell 传入了空变量，`Path('')` 变成当前目录 | 使用第 5 节的完整单行命令 |
-| `result=runtime_error frames_read=0` | 摄像头没有成功进入稳定读帧阶段 | 检查占用、设备节点和供电 |
-| `result=timeout` 且 `corner_frames=0` | 有画面，但 OpenCV 没有检测到二维码角点 | 打开 `latest.jpg`，检查距离、白边、反光、倾斜和二维码是否在画面内 |
-| `corner_frames>0` 且 `decoded_frames=0` | 检测到二维码形状，但 OpenCV 没有解出文本 | 转到第 8.3 节，判断解码器能力，不继续猜设备编号 |
-| `decoded_frames>0` 且 `invalid_payloads>0` | 二维码已经解码，但内容不符合项目契约 | 重新生成严格等于 `TOLL:GATE1` 的二维码 |
-| `result=success` | 独立识别链路通过 | 完成第 9 节验收后再进入舵机或导航集成 |
+| 关键输出                                            | 已确定事实                          | 下一步最小动作                                 |
+| ----------------------------------------------- | ------------------------------ | --------------------------------------- |
+| `--device-path does not exist`                  | Linux 当前没有这个稳定路径               | 执行第 8.1 节                               |
+| `must point to a V4L2 character device, got: .` | shell 传入了空变量，`Path('')` 变成当前目录 | 使用第 5 节的完整单行命令                          |
+| `result=runtime_error frames_read=0`            | 摄像头没有成功进入稳定读帧阶段                | 检查占用、设备节点和供电                            |
+| `result=timeout` 且 `corner_frames=0`            | 有画面，但 OpenCV 没有检测到二维码角点        | 打开 `latest.jpg`，检查距离、白边、反光、倾斜和二维码是否在画面内 |
+| `corner_frames>0` 且 `decoded_frames=0`          | 检测到二维码形状，但 OpenCV 没有解出文本       | 转到第 8.3 节，判断解码器能力，不继续猜设备编号              |
+| `decoded_frames>0` 且 `invalid_payloads>0`       | 二维码已经解码，但内容不符合项目契约             | 重新生成严格等于 `TOLL:GATE1` 的二维码              |
+| `result=success`                                | 独立识别链路通过                       | 完成第 9 节验收后再进入舵机或导航集成                    |
 
 ## 8. 分支排查
 
 ### 8.1 USB 摄像头或稳定路径消失
 
-保持下面命令运行，再物理重新插拔摄像头：
-
-```bash
-sudo dmesg -w
-```
-
-判断：
-
-- 没有任何 USB 新日志：优先检查摄像头、线缆、接口和供电。
-- 反复出现 `disconnect`、`reset`：优先检查供电不足或接触不良。
-- `lsusb` 有摄像头，但没有 `/dev/videoN`：检查 `uvcvideo` 驱动。
-- 稳定路径恢复：返回第 4.3 节，不要直接启动多个摄像头程序。
+尝试给小车充电并手动物理的关机重启小车
 
 ### 8.2 读到帧但没有检测到角点
 

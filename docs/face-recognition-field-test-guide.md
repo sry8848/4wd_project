@@ -1,64 +1,729 @@
-# 本地人脸识别实机验证指南
+# 本地人脸识别实机调试与 AI 协作指南
 
-## 1. 功能边界
+## 1. 文档目标
 
-本功能使用 OpenCV Haar 级联检测正面人脸，再用本项目实现的 LBPH 特征与本地登记照片比对。
+本文档用于在 Yahboom 4WD 树莓派小车上完成本地人脸登记和识别，并在失败时留下足够、但不过量的诊断证据。
 
-- 全程离线，不使用百度云，也不需要 API Key。
-- 人脸照片默认保存在 `captures/faces/<姓名>/`，该目录已被 `.gitignore` 忽略，不会随常规提交上传。
-- 当前适合课程演示环境下的少量人员识别，不应作为门禁或身份鉴权依据。
-- 摄像头只由 `OpenCVCameraSession` 持有，正常结束、异常和 `Ctrl+C` 都会释放设备。
+执行者不需要先理解 OpenCV、Haar 或 LBPH。执行者只需要：
 
-## 2. 树莓派依赖
+1. 严格按阶段执行命令。
+2. 当前阶段没有通过时，不跳到下一阶段。
+3. 保留完整命令、完整输出和退出码。
+4. 把这些事实交给 AI，让 AI 一次只给一个最小验证动作。
 
-项目必须使用 Python 3；树莓派上的 `python` 指向 Python 2.7，因此命令统一写成 `python3`。
+本项目的人脸识别流程是：
+
+```text
+USB 摄像头画面
+-> OpenCV Haar 检测正面人脸
+-> 本地登记照片生成 LBPH 特征
+-> 计算当前人脸与登记样本的距离
+-> 连续多帧确认身份
+```
+
+运行时不使用百度云，不需要 API Key，也不需要互联网。只有通过 APT 在线安装依赖时需要互联网。
+
+本功能适合课程演示和少量人员识别，不应作为门禁、支付或真实身份认证依据。
+
+## 2. 当前实机已确认事实
+
+以下内容是当前小车的已知事实，不应静默替换成其他值：
+
+- 操作系统：Raspbian GNU/Linux 10 Buster。
+- 树莓派上的 `python` 指向 Python 2.7，所有项目命令必须使用 `python3`。
+- 已观察到 Python 实际加载 OpenCV `4.1.2`、NumPy `1.16.2`。
+- 当前 OpenCV 的 `cv2.data.haarcascades` 为 `None`，不能依赖它自动寻找 Haar XML。
+- 当前人脸 XML 路径：
+
+```text
+/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml
+```
+
+- Sanhao Face USB 摄像头稳定路径：
+
+```text
+/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0
+```
+
+- 人脸照片默认保存到 `captures/faces/<姓名>/`，整个 `captures/` 已被 `.gitignore` 忽略。
+
+“稳定路径”是按 USB 设备身份生成的路径。`/dev/video0`、`/dev/video1` 可能在重启或重新插拔后变化，不能把它们永久写死为同一台摄像头。
+
+当前人脸测试工具只接受数字形式的 `--device`，所以每次测试前必须先让稳定路径告诉我们它当前指向哪个 `/dev/videoN`，再把数字 `N` 传给工具。
+
+## 3. 调试规则和停止条件
+
+### 3.1 一次只验证一层
+
+必须按以下顺序执行：
+
+```text
+环境
+-> 稳定摄像头路径
+-> 单张照片
+-> 单张照片中的人脸检测
+-> 登记
+-> 已登记人员识别
+-> 未登记人员反例
+-> 摄像头释放
+```
+
+例如摄像头还不能拍出清晰照片时，调整识别阈值没有意义；单张照片检测不到脸时，增加登记超时时间也不能解决根因。
+
+### 3.2 保留退出码
+
+每条 Python 测试命令结束后立即执行：
+
+```bash
+echo "exit_code=$?"
+```
+
+必须紧接着执行，因为 `$?` 只表示上一条命令的退出码。
+
+当前约定：
+
+| 退出码 | 含义 |
+| ---: | --- |
+| `0` | 当前测试成功 |
+| `1` | 当前实机条件未满足或发生已知错误 |
+| `2` | 命令参数错误 |
+| `130` | 用户按下 `Ctrl+C` |
+
+### 3.3 不做破坏性猜测
+
+遇到问题时不要立即：
+
+- 卸载当前 OpenCV。
+- 同时安装多个 pip 版 OpenCV。
+- 删除 `captures/faces/`。
+- 从参考项目复制旧 XML。
+- 大幅提高阈值直到“能识别”。
+- 在摄像头稳定路径消失时不断尝试 `/dev/video0`、`1`、`2`。
+
+这些操作会改变证据，使问题更难定位。
+
+## 4. 阶段 0：进入项目并核对环境
+
+进入树莓派项目目录：
+
+```bash
+cd /home/pi/4wd_project
+pwd
+```
+
+预期 `pwd` 输出：
+
+```text
+/home/pi/4wd_project
+```
+
+检查 Python、OpenCV 和 NumPy 的实际来源：
+
+```bash
+python3 - <<'PY'
+import sys
+import cv2
+import numpy
+
+print("python_version=", sys.version.replace("\n", " "))
+print("python_path=", sys.executable)
+print("opencv_version=", cv2.__version__)
+print("opencv_path=", cv2.__file__)
+print("numpy_version=", numpy.__version__)
+print("numpy_path=", numpy.__file__)
+print(
+    "cv2_data_haarcascades=",
+    getattr(getattr(cv2, "data", None), "haarcascades", None),
+)
+PY
+echo "exit_code=$?"
+```
+
+检查系统软件包和 Haar XML：
+
+```bash
+dpkg-query -W \
+  -f='${binary:Package}: ${db:Status-Status}, version=${Version}\n' \
+  python3-opencv python3-numpy opencv-data
+
+test -f /usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml
+echo "cascade_exit_code=$?"
+
+dpkg -L opencv-data | grep 'haarcascade_frontalface_default.xml$'
+```
+
+本阶段通过标准：
+
+1. Python 命令退出码为 `0`。
+2. 可以 import `cv2` 和 `numpy`。
+3. 三个软件包均显示 `installed`。
+4. `cascade_exit_code=0`。
+5. XML 路径与当前已确认路径一致。
+
+`cv2_data_haarcascades=None` 在当前环境中不是失败。后续命令会显式传入 XML 路径。
+
+如果 APT 安装、软件源或中断安装有问题，转到“附录 A：依赖安装故障”。
+
+## 5. 阶段 1：确认 USB 摄像头稳定路径
+
+执行：
+
+```bash
+CAMERA_BY_ID='/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0'
+readlink -f "$CAMERA_BY_ID"
+echo "camera_path_exit_code=$?"
+```
+
+正常情况下会输出类似：
+
+```text
+/dev/video0
+camera_path_exit_code=0
+```
+
+也可能指向 `/dev/video1` 或其他数字。这不是错误。根据输出末尾的数字，在当前 SSH 终端设置一次 `CAMERA_INDEX`：
+
+```bash
+# readlink 输出 /dev/video0 时执行：
+CAMERA_INDEX=0
+
+# 如果输出是 /dev/video1，则应改为 CAMERA_INDEX=1。
+echo "camera_index=$CAMERA_INDEX"
+```
+
+Shell 变量只在当前 SSH 终端有效。重新登录或物理重启后，必须重新执行 `readlink` 并设置 `CAMERA_INDEX`。不要因为以前使用过设备 `0`，就忽略本次结果。
+
+### 5.1 稳定路径消失时的指定恢复流程
+
+出现以下任一情况时，视为稳定路径消失：
+
+- `readlink` 没有输出。
+- `camera_path_exit_code` 不是 `0`。
+- `/dev/v4l/by-id/` 中没有该 Sanhao Face 路径。
+
+先停止人脸测试，不要继续尝试随机设备编号。执行只读检查：
+
+```bash
+ls -l /dev/v4l/by-id/ 2>&1
+ls -l /dev/video* 2>&1
+vcgencmd get_throttled 2>&1
+```
+
+将完整输出保留给 AI。稳定路径消失通常说明 Linux 没有按原身份识别到摄像头；当前项目优先按供电或 USB 枚举异常处理，不先改识别代码。
+
+按以下顺序恢复：
+
+1. 停止所有摄像头、人脸识别和小车运动测试。
+2. 给小车充电，或连接已经确认稳定的电源。充电期间不要运行电机测试。
+3. 摄像头 USB 插头保持连接，先执行安全关机：
+
+```bash
+sudo poweroff
+```
+
+4. SSH 连接断开是正常现象。等待系统完成关机、存储活动灯停止闪烁。
+5. 使用小车物理电源开关关机，或断开小车电源。
+6. 等待至少 10 秒。
+7. 重新打开小车物理电源，等待树莓派完成启动。
+8. 电脑重新连接小车热点，再重新 SSH 登录。
+9. 重新执行：
+
+```bash
+readlink -f /dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0
+echo "camera_path_exit_code=$?"
+```
+
+Raspberry Pi 官方建议在断开电源前先安全关机，命令为 `sudo poweroff`：
+
+- https://www.raspberrypi.com/documentation/computers/getting-started.html#shutdown-options
+
+只有树莓派已经完全卡死，无法执行 `sudo poweroff` 时，才把直接物理断电作为最后手段。直接断电可能损坏正在写入的 microSD 文件系统，执行后必须把这一事实告诉 AI。
+
+如果完成充电和物理关机重启后稳定路径仍然不存在：
+
+1. 再次安全关机。
+2. 在断电状态下重新插紧 USB 摄像头。
+3. 重新上电后再次检查稳定路径。
+4. 仍不存在时停止测试，报告 USB 端口、摄像头或供电硬件问题，不进入人脸登记。
+
+## 6. 阶段 2：排除摄像头占用并拍摄固定测试照片
+
+确认当前终端已经按上一阶段设置 `CAMERA_INDEX`。
+
+先查看摄像头是否被服务占用：
+
+```bash
+sudo fuser -v "/dev/video${CAMERA_INDEX}" 2>&1
+systemctl status 4wd-camera.service --no-pager 2>&1
+```
+
+判断方式：
+
+- `fuser` 没有列出进程：通常没有进程持有设备。
+- `4wd-camera.service` 显示 `active (running)`：它可能正在占用摄像头。
+- 不要根据进程名字猜测后直接杀进程。
+
+如果确认 `4wd-camera.service` 正在占用摄像头，本次手动测试前执行：
+
+```bash
+sudo systemctl stop 4wd-camera.service
+```
+
+这只是停止当前运行，不会禁用开机启动。不要执行 `disable`。
+
+拍摄一张固定路径的照片：
+
+```bash
+python3 src/tools/test_camera.py \
+  --backend opencv \
+  --device "$CAMERA_INDEX" \
+  --output captures/face_precheck.jpg \
+  --width 640 \
+  --height 480
+echo "exit_code=$?"
+```
+
+成功输出必须包含：
+
+```text
+Saved photo: captures/face_precheck.jpg
+Backend: opencv
+Device: 0
+Resolution: 640x480
+Camera test finished.
+exit_code=0
+```
+
+通过 WinSCP 打开 `captures/face_precheck.jpg`，人工检查：
+
+- 文件不是空文件。
+- 画面不是全黑、全白或严重偏色。
+- 人脸正对摄像头。
+- 人脸轮廓清晰，没有明显运动模糊。
+- 人脸不要太小，建议占据画面高度的大约四分之一以上。
+- 画面中只有一个真人正面脸，避免其他人、海报或屏幕中的脸。
+
+照片不清晰时先调整光照、距离、摄像头角度和供电，不进入下一阶段。
+
+## 7. 阶段 3：在固定照片中单独验证人脸检测
+
+这一阶段只验证“照片里能否找到脸”，不判断是谁。
+
+```bash
+python3 - <<'PY'
+import cv2
+from src.algorithms.face_recognition import HaarFaceDetector
+
+image_path = "captures/face_precheck.jpg"
+cascade_path = "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"
+image = cv2.imread(image_path)
+
+if image is None:
+    print("image_status=unreadable path=" + image_path)
+    raise SystemExit(1)
+
+detector = HaarFaceDetector(cascade_path=cascade_path)
+boxes = detector.detect(image)
+print("image_status=ok shape=" + str(image.shape))
+print("face_count=" + str(len(boxes)))
+for index, box in enumerate(boxes, start=1):
+    print(
+        "face_{}=x:{},y:{},width:{},height:{}".format(
+            index, box.x, box.y, box.width, box.height
+        )
+    )
+
+raise SystemExit(0 if len(boxes) == 1 else 1)
+PY
+echo "exit_code=$?"
+```
+
+判断方式：
+
+| 输出 | 结论 | 下一步 |
+| --- | --- | --- |
+| `face_count=1`、退出码 `0` | 人脸检测通过 | 进入登记 |
+| `face_count=0` | 摄像头能拍照，但 Haar 没找到正面脸 | 调整距离、角度、光照后重新拍照 |
+| `face_count>1` | 画面中检测到多张脸 | 清理背景，只保留一张真人脸 |
+| `image_status=unreadable` | 照片不存在、为空或损坏 | 回到摄像头拍照阶段 |
+| XML 读取失败 | Haar 文件路径或软件包异常 | 回到环境阶段 |
+
+`face_count=0` 时不要修改 LBPH 阈值。LBPH 阈值只决定“检测到的脸像不像登记人员”，不能让 Haar 凭空发现一张脸。
+
+## 8. 阶段 4：登记一个人
+
+### 8.1 登记前检查旧样本
+
+示例姓名使用 `Alice`。实际姓名只允许 1 至 32 个中英文字符、数字、下划线或连字符。
+
+```bash
+find captures/faces/Alice -maxdepth 1 -type f 2>/dev/null | wc -l
+```
+
+输出大于 `0` 说明以前已经登记过同名人员。当前程序会继续追加照片，不会自动替换旧数据。
+
+如果旧照片属于错误人员、光照严重不同或已损坏，不要直接删除。确认需要重新登记后，可先把旧目录改名保留：
+
+```bash
+mv captures/faces/Alice \
+  "captures/faces/Alice_backup_$(date +%Y%m%d_%H%M%S)"
+```
+
+这条命令会移动本地人脸数据，只有确认需要重新登记时才执行。
+
+### 8.2 执行登记
+
+确认当前终端中的 `CAMERA_INDEX` 与稳定路径当前指向一致：
+
+```bash
+python3 src/tools/test_face_recognition.py enroll Alice \
+  --device "$CAMERA_INDEX" \
+  --count 10 \
+  --timeout 20 \
+  --cascade /usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml
+echo "exit_code=$?"
+```
+
+登记期间：
+
+- 只保留一人面对摄像头。
+- 正视摄像头为主。
+- 在每次保存之间轻微改变表情和头部角度。
+- 不要快速大幅摇头。
+- 不要让另一人从背景经过。
+
+成功时应依次看到：
+
+```text
+Accepted sample 1/10: ...
+...
+Accepted sample 10/10: ...
+Enrollment complete. Run the recognize command next.
+exit_code=0
+```
+
+如果程序长时间没有输出，当前实现通常正在静默等待“画面中恰好一张正面脸”。等待 5 秒仍没有第一张样本时按 `Ctrl+C`，不要空等到超时，然后回到固定照片检测阶段。
+
+如果最终显示：
+
+```text
+Enrollment timed out after X/10 samples
+```
+
+按以下方式判断：
+
+- `0/10`：优先检查人脸检测、摄像头编号和摄像头是否被占用。
+- `1-9/10`：检查人脸是否频繁转开、出现第二张脸或光照变化。
+- 不要第一反应就把超时改得很长；先确认为什么样本没有被接受。
+
+## 9. 阶段 5：已登记人员正例测试
+
+仍由刚才登记的人员面对摄像头：
+
+```bash
+python3 src/tools/test_face_recognition.py recognize \
+  --device "$CAMERA_INDEX" \
+  --timeout 20 \
+  --threshold 0.30 \
+  --confirm-frames 3 \
+  --cascade /usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml
+echo "exit_code=$?"
+```
+
+成功标准：
+
+```text
+Loaded 10 samples for Alice (0 skipped).
+Candidate: Alice distance=<数值> confirmation=1/3
+Candidate: Alice distance=<数值> confirmation=2/3
+Candidate: Alice distance=<数值> confirmation=3/3
+Recognized: Alice
+exit_code=0
+```
+
+需要记录每次候选的 `distance`。距离越小，当前脸与登记样本越相似。
+
+失败结果分两类：
+
+```text
+No registered person was confirmed before timeout. No face was detected.
+```
+
+表示没有检测到脸。回到摄像头和 Haar 检测，不要调整识别阈值。
+
+```text
+No registered person was confirmed before timeout. Best unknown distance: 0.xxx.
+```
+
+表示检测到了脸，但距离大于阈值，被判定为陌生人。先补充当前光照和距离下的登记照片，再考虑小幅提高阈值。
+
+## 10. 阶段 6：未登记人员反例测试
+
+必须由从未登记过的人面对摄像头，并使用与正例完全相同的阈值：
+
+```bash
+python3 src/tools/test_face_recognition.py recognize \
+  --device "$CAMERA_INDEX" \
+  --timeout 20 \
+  --threshold 0.30 \
+  --confirm-frames 3 \
+  --cascade /usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml
+echo "exit_code=$?"
+```
+
+反例通过标准：
+
+- 陌生人的脸确实出现在清晰画面中。
+- 最终输出 `Best unknown distance`，证明程序检测到了脸。
+- 没有输出任何 `Recognized: <姓名>`。
+- 命令因“未确认登记人员”返回退出码 `1`。这里的退出码 `1` 是预期结果，不代表反例失败。
+
+如果输出 `No face was detected`，不能算反例通过，因为它只证明程序没有看到脸。
+
+如果陌生人被识别成登记人员，降低阈值，例如：
+
+```bash
+python3 src/tools/test_face_recognition.py recognize \
+  --device "$CAMERA_INDEX" \
+  --timeout 20 \
+  --threshold 0.25 \
+  --confirm-frames 3 \
+  --cascade /usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml
+```
+
+降低阈值后必须重新测试已登记人员和未登记人员。只让陌生人不通过、却导致本人也无法通过，不算校准成功。
+
+不要通过单纯增加 `--confirm-frames` 掩盖持续误认。连续多帧都把陌生人判成同一人时，核心问题仍是阈值或样本质量。
+
+## 11. 阶段 7：摄像头释放验证
+
+### 11.1 正常结束后的释放
+
+识别命令正常结束后立即执行：
+
+```bash
+python3 src/tools/test_camera.py \
+  --backend opencv \
+  --device "$CAMERA_INDEX" \
+  --output captures/face_release_after_normal.jpg
+echo "exit_code=$?"
+```
+
+必须能够重新拍照且退出码为 `0`。
+
+### 11.2 `Ctrl+C` 后的释放
+
+再次启动识别，在运行过程中按一次 `Ctrl+C`：
+
+```bash
+python3 src/tools/test_face_recognition.py recognize \
+  --device "$CAMERA_INDEX" \
+  --timeout 20 \
+  --cascade /usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml
+echo "exit_code=$?"
+```
+
+预期退出码为 `130`。随后立即重新执行摄像头拍照测试，仍应成功。
+
+如果重新打开失败：
+
+```bash
+sudo fuser -v "/dev/video${CAMERA_INDEX}" 2>&1
+ps -ef | grep -E '[p]ython|[u]vicorn|[m]jpg'
+```
+
+先确认哪个进程占用摄像头，再处理该进程。不要执行模糊匹配的批量 `kill`。
+
+## 12. 故障决策表
+
+| 现象 | 已确定含义 | 最小下一步 |
+| --- | --- | --- |
+| `ModuleNotFoundError: cv2` | 当前 `python3` 找不到 OpenCV | 核对 Python 路径和 APT 包状态 |
+| OpenCV 版本与 APT 包版本不同 | 系统可能存在另一份 OpenCV | 查看 `cv2.__file__`，不要立即卸载 |
+| `cv2_data_haarcascades=None` | OpenCV 没暴露默认数据目录 | 显式传入已确认 XML 路径 |
+| Haar XML 不存在 | `opencv-data` 未安装或文件异常 | 核对 `dpkg-query` 和 `dpkg -L` |
+| 稳定摄像头路径消失 | Linux 未按原身份识别摄像头 | 充电并安全关机后物理断电重启 |
+| 路径存在但摄像头打不开 | 设备可能被其他进程占用 | 执行 `fuser` 和服务状态检查 |
+| 摄像头打开但没有帧 | USB、供电、驱动或设备异常 | 保留完整 OpenCV 错误，回到硬件检查 |
+| 固定照片 `face_count=0` | Haar 没检测到正面脸 | 调整画面，不改 LBPH 阈值 |
+| 固定照片 `face_count>1` | 画面不满足单人登记契约 | 清理背景，只保留一张脸 |
+| 登记一直没有 `Accepted sample` | 没有持续满足恰好一张脸 | `Ctrl+C`，回到固定照片检测 |
+| 数据集全部 skipped | 登记照片不可读或重新检测不到脸 | 检查登记照片，不提高阈值 |
+| 本人得到 `Best unknown distance` | 检测到脸，但匹配距离过大 | 先补样本，再小幅调阈值 |
+| 陌生人输出 `Recognized` | 阈值过松或样本质量差 | 降低阈值并重新测正反例 |
+| 候选姓名反复变化 | 数据集可能混入或人物特征区分不足 | 检查每个人目录中的照片 |
+| 退出后摄像头仍被占用 | 仍有进程持有设备 | 用 `fuser` 找到真实进程 |
+
+## 13. 与 AI 协作的固定格式
+
+遇到问题时，把下面模板填完整：
+
+```text
+当前阶段：
+执行的完整命令：
+从命令开始到结束的完整输出：
+紧接着执行 echo "$?" 的结果：
+稳定路径 readlink 输出：
+测试照片是否能打开：
+照片是否清晰：
+画面中实际有几个人：
+是否按过 Ctrl+C：
+是否刚刚重启或重新插拔摄像头：
+已经执行过哪些修改系统的命令：
+```
+
+如果问题与照片质量或人脸检测有关，可以把 `captures/face_precheck.jpg` 发给 AI；照片包含个人隐私，是否提供由用户决定。
+
+要求 AI 按以下格式回答：
+
+```text
+已确定事实：
+证据来源：
+合理推测：
+仍缺少的信息：
+下一步唯一的最小验证动作：
+成功时应该看到什么：
+失败时应该保留什么输出：
+```
+
+不要让 AI 一次给出十条修改命令。当前证据不足时，正确动作是补一条只读证据，而不是同时改软件源、摄像头编号、OpenCV 和阈值。
+
+## 14. 完整验收标准
+
+只有以下项目全部满足，才算人脸识别实机验证完成：
+
+1. 稳定摄像头路径存在，并能明确解析到当前 `/dev/videoN`。
+2. 固定测试照片清晰可用。
+3. 固定照片中检测到恰好一张正面脸。
+4. 登记保存 10 张样本并返回退出码 `0`。
+5. 已登记人员在 20 秒内连续 3 帧识别成功。
+6. 未登记人员的脸被实际检测到，但没有输出登记姓名。
+7. 正例和反例使用同一阈值。
+8. 正常结束后摄像头可立即重新打开。
+9. 按 `Ctrl+C` 后摄像头也可立即重新打开。
+10. 现场设备编号、OpenCV 版本、样本数、阈值、距离和光照已记录到 `docs/test-records.md`。
+
+## 附录 A：依赖安装故障
+
+### A.1 `apt update` 的作用
 
 ```bash
 sudo apt update
-sudo apt install python3-opencv python3-numpy
-cd /home/pi/4wd_project
 ```
 
-本实现使用 OpenCV 自带的 `haarcascade_frontalface_default.xml`，不需要从参考项目复制 XML，也不依赖 `opencv-contrib` 的 `cv2.face`。
+只更新“可安装软件目录”，不会安装 OpenCV，也不会升级那 112 个待升级软件包。
 
-## 3. 登记人员
-
-先单独验证摄像头设备编号，再采集 10 张正面照片：
+当前任务不要执行全量：
 
 ```bash
-python3 src/tools/test_camera.py --backend opencv --device 0
-python3 src/tools/test_face_recognition.py enroll Alice --device 0
+sudo apt upgrade
 ```
 
-如果设备 0 无法打开，停止占用摄像头的视频服务后尝试 `--device 1`。采集时保证画面中只有一张脸，并轻微改变表情和头部角度。姓名只允许 1 至 32 个中英文字符、数字、下划线或连字符。
+### A.2 Buster 清华 Raspbian 源返回 404
 
-## 4. 限时识别
+先查看真实配置文件和行号：
 
 ```bash
-python3 src/tools/test_face_recognition.py recognize --device 0 --timeout 20
+grep -RnsE '^[[:space:]]*deb ' \
+  /etc/apt/sources.list \
+  /etc/apt/sources.list.d/*.list 2>/dev/null
 ```
 
-默认需要同一身份连续出现 3 帧才成功。成功输出 `Recognized: <姓名>` 并返回退出码 0；超时、只有陌生人或没有检测到人脸时返回退出码 1。
+当前小车已确认应只把失效的 Raspbian 主仓库地址：
 
-## 5. 阈值校准
+```text
+http://mirrors.tuna.tsinghua.edu.cn/raspbian/raspbian/
+```
 
-距离越小代表越相似，默认阈值为 `0.30`：
+替换为 Buster 归档地址：
+
+```text
+http://legacy.raspbian.org/raspbian/
+```
+
+不要修改仍然正常的 Raspberry Pi 专用仓库。修改前备份，且只修改已确认文件：
 
 ```bash
-python3 src/tools/test_face_recognition.py recognize --device 0 --threshold 0.25
+sudo sed -i.bak \
+  's|http://mirrors.tuna.tsinghua.edu.cn/raspbian/raspbian/|http://legacy.raspbian.org/raspbian/|' \
+  /etc/apt/sources.list
 ```
 
-- 把陌生人误认为已登记人员：降低阈值，例如从 `0.30` 改为 `0.25`。
-- 本人经常被判定为陌生人：先补充当前光照下的登记照片，再小幅提高阈值。
-- 不要只用本人测试。验收至少包括“登记人员成功”和“未登记人员超时”两个场景。
+### A.3 暂时不能解析域名
 
-建议把最终现场阈值记录在 `docs/test-records.md`，不要在没有实测数据时修改全局配置。
+这表示网络出口或 DNS 有问题，不是 OpenCV 错误。执行：
 
-## 6. 验收记录建议
+```bash
+ip route
+ping -c 3 -W 2 1.1.1.1
+getent hosts legacy.raspbian.org
+cat /etc/resolv.conf
+```
 
-记录设备编号、分辨率、样本数、阈值、环境光照以及以下结果：
+当前小车可以继续向电脑提供自己的 Wi-Fi 热点，同时通过手机 USB 网络共享访问互联网。电脑访问小车前后端只需要局域网；APT 安装才需要互联网。
 
-1. 登记过程中只有检测到恰好一张正面人脸时才保存图片。
-2. 登记人员在 20 秒内连续 3 帧识别成功。
-3. 未登记人员在相同阈值下不会输出已登记姓名。
-4. 正常退出和按 `Ctrl+C` 后，摄像头可立即被下一次命令打开。
+### A.4 安装所需软件包
+
+```bash
+sudo apt install python3-opencv python3-numpy opencv-data
+```
+
+### A.5 关闭终端后确认安装是否完整
+
+先检查安装是否仍在运行：
+
+```bash
+ps -eo pid,stat,etime,cmd | grep -E '[a]pt|[d]pkg'
+```
+
+再检查状态：
+
+```bash
+dpkg-query -W \
+  -f='${binary:Package}: ${db:Status-Status}, version=${Version}\n' \
+  python3-opencv python3-numpy opencv-data
+
+dpkg --audit
+```
+
+三个包全部为 `installed` 且 `dpkg --audit` 没有输出，才算安装完整。
+
+如果出现 `half-installed`、`unpacked` 或 `half-configured`，说明安装被中断。确认没有 APT/DPKG 进程仍在运行后，再执行修复：
+
+```bash
+sudo dpkg --configure -a
+sudo apt -f install
+```
+
+修复后重新检查包状态，不要假装安装已经完成。
+
+## 附录 B：实机记录模板
+
+把实际结果追加到 `docs/test-records.md`：
+
+```text
+日期：
+测试人员：
+树莓派系统：
+Python 版本和路径：
+OpenCV 版本和路径：
+NumPy 版本：
+稳定摄像头路径：
+稳定路径当前指向：
+实际分辨率：
+Haar XML 路径：
+登记姓名：
+可用样本数：
+阈值：
+连续确认帧数：
+已登记人员距离：
+未登记人员最佳距离：
+正例：通过 / 失败，现象：
+反例：通过 / 失败，现象：
+正常退出后释放：通过 / 失败：
+Ctrl+C 后释放：通过 / 失败：
+测试光照和距离：
+稳定路径是否曾消失：
+是否执行充电和物理关机重启：
+其他事实：
+```
