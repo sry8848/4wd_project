@@ -5,8 +5,8 @@
         --device-path /dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0 \
         --enable-motor-motion
 
-测试会先静止读帧，再交替前进、停车、后退、停车。摄像头连续读帧失败
-达到阈值时，小车会立即刹车并输出 fail 结论。
+测试会先静止读帧，再交替前进、停车、后退、停车。连续读帧失败，或
+OpenCV 阻塞但在超时时间内没有新帧时，小车都会立即刹车并输出 fail。
 """
 
 from __future__ import annotations
@@ -90,6 +90,12 @@ def parse_args() -> argparse.Namespace:
         help="连续多少次读帧失败后判为掉线。",
     )
     parser.add_argument(
+        "--no-frame-timeout",
+        type=float,
+        default=2.0,
+        help="无新帧多少秒后由独立看门狗刹车，默认 2 秒。",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("captures/camera_motion_stability"),
@@ -150,6 +156,7 @@ def main() -> int:
             baseline_seconds=args.baseline_seconds,
             cycles=args.cycles,
             failure_threshold=args.failure_threshold,
+            no_frame_timeout=args.no_frame_timeout,
             log=lambda message: print(message, flush=True),
         )
     except CameraCaptureError as exc:
@@ -182,6 +189,7 @@ def main() -> int:
         "baseline_seconds": args.baseline_seconds,
         "cycles": args.cycles,
         "failure_threshold": args.failure_threshold,
+        "no_frame_timeout": args.no_frame_timeout,
         "result": asdict(result),
     }
     report_path.write_text(
@@ -196,6 +204,20 @@ def main() -> int:
     print(f"read_failures={result.read_failures}")
     print(f"max_consecutive_failures={result.max_consecutive_failures}")
     print(f"stopped_early={result.stopped_early}")
+    print(f"detection_mode={result.detection_mode}")
+    print(f"last_frame_elapsed_seconds={result.last_frame_elapsed_seconds}")
+    print(f"last_frame_phase={result.last_frame_phase}")
+    print(f"suspected_trigger_phase={result.suspected_trigger_phase}")
+    print(
+        "stall_detected_elapsed_seconds="
+        f"{result.stall_detected_elapsed_seconds}"
+    )
+    print(f"stall_detected_phase={result.stall_detected_phase}")
+    print(
+        "no_frame_seconds_at_detection="
+        f"{result.no_frame_seconds_at_detection}"
+    )
+    print(f"reader_thread_blocked={result.reader_thread_blocked}")
     if result.failure_reason:
         print(f"failure_reason={result.failure_reason}")
     print(f"report={report_path}")
@@ -207,6 +229,19 @@ def main() -> int:
         print("结论：出现瞬时读帧失败但已恢复，建议重复测试并检查供电和 USB 接头。")
         return 2
 
+    if result.detection_mode == "no-frame-watchdog":
+        print(
+            "停帧定位：最后成功帧位于 "
+            f"{result.last_frame_phase}，最可能从 "
+            f"{result.suspected_trigger_phase} 开始停止出帧。",
+            file=sys.stderr,
+        )
+        if result.reader_thread_blocked:
+            print(
+                "OpenCV read() 在刹车时仍处于阻塞状态；No such device "
+                "可能稍后才返回，判定没有等待该错误。",
+                file=sys.stderr,
+            )
     print("结论：检测到摄像头掉线或监测线程失去响应。", file=sys.stderr)
     return 1
 
