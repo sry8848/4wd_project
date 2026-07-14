@@ -1,4 +1,10 @@
-"""Manual camera capture test with visible progress output."""
+"""Manual camera capture test with visible progress output.
+
+Examples:
+    python3 src/tools/test_camera.py --backend opencv --device 1
+    python3 src/tools/test_camera.py --backend opencv \
+        --device-path /dev/v4l/by-id/...-video-index0
+"""
 
 from __future__ import annotations
 
@@ -25,11 +31,19 @@ def parse_args() -> argparse.Namespace:
             "raspistill for CSI cameras."
         ),
     )
-    parser.add_argument(
+    device_source = parser.add_mutually_exclusive_group()
+    device_source.add_argument(
         "--device",
         type=int,
-        default=0,
-        help="OpenCV camera device index. Ignored by libcamera backend.",
+        default=None,
+        help="OpenCV camera device index. Defaults to 0 when no path is given.",
+    )
+    device_source.add_argument(
+        "--device-path",
+        help=(
+            "Stable V4L2 camera path, for example "
+            "/dev/v4l/by-id/...-video-index0."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -81,7 +95,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Capture one diagnostic frame from a numeric index or stable path."""
+
     args = parse_args()
+    selected_device = (
+        args.device_path
+        if args.device_path is not None
+        else (args.device if args.device is not None else 0)
+    )
     output_path = args.output or build_photo_path(
         output_dir=args.output_dir,
         prefix=args.prefix,
@@ -91,7 +112,7 @@ def main() -> int:
     print("Camera test started.", flush=True)
     print(f"Project root: {PROJECT_ROOT}", flush=True)
     print(f"Backend: {args.backend}", flush=True)
-    print(f"Device index: {args.device}", flush=True)
+    print(f"Camera device: {selected_device}", flush=True)
     print(f"Output path: {output_path}", flush=True)
 
     try:
@@ -99,7 +120,7 @@ def main() -> int:
         result = capture_photo(
             output_path=output_path,
             backend=args.backend,
-            device_index=args.device,
+            device_index=selected_device,
             width=args.width,
             height=args.height,
             warmup_frames=args.warmup_frames,

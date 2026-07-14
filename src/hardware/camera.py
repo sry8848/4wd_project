@@ -370,7 +370,7 @@ def capture_photo(
     prefix: str = DEFAULT_PHOTO_PREFIX,
     extension: str = DEFAULT_PHOTO_EXTENSION,
     backend: CameraBackend = DEFAULT_BACKEND,
-    device_index: int = 0,
+    device_index: CameraDevice = 0,
     width: Optional[int] = None,
     height: Optional[int] = None,
     warmup_frames: int = 5,
@@ -388,7 +388,7 @@ def capture_photo(
         extension: File extension used when ``output_path`` is omitted.
         backend: ``opencv`` for USB cameras, ``libcamera`` or ``raspistill``
             for CSI cameras, or ``auto`` to try known backends in order.
-        device_index: OpenCV camera index, usually 0 or 1 on Raspberry Pi.
+        device_index: OpenCV camera index or stable V4L2 device path.
         width: Optional requested frame width.
         height: Optional requested frame height.
         warmup_frames: Number of frames to discard before saving the final one.
@@ -471,7 +471,7 @@ def capture_photo(
 def _capture_with_opencv(
     *,
     target_path: Path,
-    device_index: int,
+    device_index: CameraDevice,
     width: Optional[int],
     height: Optional[int],
     warmup_frames: int,

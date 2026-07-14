@@ -3,6 +3,8 @@
 Examples:
     python3 src/tools/test_color_detect.py --image captures/photo.jpg
     python3 src/tools/test_color_detect.py --device 1 --timeout 15
+    python3 src/tools/test_color_detect.py \
+        --device-path /dev/v4l/by-id/...-video-index0 --timeout 15
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from src.algorithms.color_detect import (
     ColorDetectionResult,
     ColorDetector,
 )
-from src.hardware.camera import CameraCaptureError, OpenCVCameraSession
+from src.hardware.camera import CameraCaptureError, CameraDevice, OpenCVCameraSession
 
 
 COLOR_LABELS = {
@@ -69,7 +71,20 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="读取一张本地图片；不传时使用摄像头限时扫描。",
     )
-    parser.add_argument("--device", type=int, default=0, help="OpenCV 摄像头编号。")
+    device_source = parser.add_mutually_exclusive_group()
+    device_source.add_argument(
+        "--device",
+        type=int,
+        default=None,
+        help="OpenCV 摄像头编号；没有提供稳定路径时默认使用 0。",
+    )
+    device_source.add_argument(
+        "--device-path",
+        help=(
+            "稳定 V4L2 摄像头路径，例如 "
+            "/dev/v4l/by-id/...-video-index0。"
+        ),
+    )
     parser.add_argument("--width", type=int, default=640, help="摄像头画面宽度。")
     parser.add_argument("--height", type=int, default=480, help="摄像头画面高度。")
     parser.add_argument(
@@ -117,6 +132,21 @@ def build_output_path(requested_path: Optional[Path]) -> Path:
         return requested_path
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return Path("captures") / ("color_detection_{0}.jpg".format(timestamp))
+
+
+def select_camera_device(args: argparse.Namespace) -> CameraDevice:
+    """Return the stable camera path or numeric fallback selected by the CLI.
+
+    Args:
+        args: Parsed arguments containing ``device`` and ``device_path``.
+
+    Returns:
+        Stable V4L2 path when supplied; otherwise an integer camera index.
+    """
+
+    if args.device_path is not None:
+        return args.device_path
+    return args.device if args.device is not None else 0
 
 
 def save_annotated_frame(cv2, detector: ColorDetector, frame, result, output: Path) -> None:
@@ -197,18 +227,19 @@ def run_camera(args: argparse.Namespace, detector: ColorDetector, cv2) -> int:
         raise ValueError("--stable-frames 必须大于 0")
 
     deadline = time.monotonic() + args.timeout
+    selected_device = select_camera_device(args)
     previous_color = None
     consecutive_frames = 0
     print(
         "开始颜色识别：camera={0}, timeout={1:.1f}s, colors={2}".format(
-            args.device, args.timeout, ",".join(args.colors)
+            selected_device, args.timeout, ",".join(args.colors)
         ),
         flush=True,
     )
 
     # The camera context guarantees release on success, error and Ctrl+C.
     with OpenCVCameraSession(
-        device_index=args.device,
+        device_index=selected_device,
         width=args.width,
         height=args.height,
         warmup_frames=5,

@@ -21,11 +21,16 @@ cd /home/pi/4wd_project
 
 ## 3. 先用静态图片验证
 
-先拍一张包含明显色块的照片，再识别：
+先确认稳定设备路径仍指向可采集的 `video-index0`，再拍一张包含明显色块的照片并识别：
 
 ```bash
-python3 src/tools/test_camera.py --backend opencv --device 0
-python3 src/tools/test_color_detect.py --image captures/photo.jpg
+CAMERA_PATH=/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0
+readlink -f "$CAMERA_PATH"
+python3 src/tools/test_camera.py \
+  --backend opencv \
+  --device-path "$CAMERA_PATH" \
+  --output captures/color_source.jpg
+python3 src/tools/test_color_detect.py --image captures/color_source.jpg
 ```
 
 也可以只识别红、绿，并调整最小区域面积：
@@ -42,13 +47,16 @@ python3 src/tools/test_color_detect.py \
 
 ## 4. 摄像头限时识别
 
-确认摄像头编号后运行：
+确认稳定路径后运行：
 
 ```bash
-python3 src/tools/test_color_detect.py --device 0 --timeout 15
+CAMERA_PATH=/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0
+python3 src/tools/test_color_detect.py \
+  --device-path "$CAMERA_PATH" \
+  --timeout 15
 ```
 
-如果设备 0 无法打开，停止占用摄像头的视频服务后尝试 `--device 1`。默认连续 3 帧识别到同一主颜色才确认，可用 `--stable-frames` 调整。
+当前实机确认 `video-index0` 可采集并指向 `/dev/video1`；`video-index1` 指向 `/dev/video2`，不能用于采集。若稳定路径无法打开，先停止占用摄像头的视频服务并重新运行路径探测，不要改用 `/dev/video10` 至 `/dev/video18` 的编解码节点。默认连续 3 帧识别到同一主颜色才确认，可用 `--stable-frames` 调整。数字参数 `--device 1` 仅作为兼容用法保留。
 
 ## 5. 推荐实测步骤
 
