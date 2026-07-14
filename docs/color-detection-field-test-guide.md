@@ -1,0 +1,61 @@
+# 颜色识别实机测试说明
+
+本功能将 OpenCV BGR 图像转换为 HSV，识别红、绿、蓝、黄色块，输出主颜色、区域中心、面积和画面占比，并保存带框标注图。
+
+## 1. 模块边界
+
+- `src/algorithms/color_detect.py`：只处理输入图像，不访问 GPIO、摄像头、电机或 LED。
+- `src/tools/test_color_detect.py`：读取一张图片，或限时打开摄像头扫描；正常结束、异常和 `Ctrl+C` 都会释放摄像头。
+- 本功能只报告颜色，不直接改变小车运动状态。后续需要“红灯停车”时，应在独立 task 中组合颜色结果和电机对象。
+
+## 2. 依赖
+
+树莓派的 `python` 指向 Python 2.7，必须使用 `python3`：
+
+```bash
+sudo apt install python3-opencv python3-numpy
+cd /home/pi/4wd_project
+```
+
+部署时按本项目约定，通过 WinSCP 将 Windows 仓库中的 `src/` 覆盖到树莓派 `/home/pi/4wd_project/src/`，不要在树莓派上执行 Git 命令。
+
+## 3. 先用静态图片验证
+
+先拍一张包含明显色块的照片，再识别：
+
+```bash
+python3 src/tools/test_camera.py --backend opencv --device 0
+python3 src/tools/test_color_detect.py --image captures/photo.jpg
+```
+
+也可以只识别红、绿，并调整最小区域面积：
+
+```bash
+python3 src/tools/test_color_detect.py \
+  --image captures/photo.jpg \
+  --colors red,green \
+  --min-area 1000 \
+  --output captures/color_result.jpg
+```
+
+命令会打印主颜色和区域数据。即使没有识别到颜色，也会保存标注图，便于检查光照、目标大小和阈值。
+
+## 4. 摄像头限时识别
+
+确认摄像头编号后运行：
+
+```bash
+python3 src/tools/test_color_detect.py --device 0 --timeout 15
+```
+
+如果设备 0 无法打开，停止占用摄像头的视频服务后尝试 `--device 1`。默认连续 3 帧识别到同一主颜色才确认，可用 `--stable-frames` 调整。
+
+## 5. 推荐实测步骤
+
+1. 小车静止，镜头前只放一张大号纯色卡纸，色块至少占画面约 5%。
+2. 分别测试红、绿、蓝、黄，核对终端主颜色和 `captures/color_detection_*.jpg` 标注框。
+3. 改变距离和室内光照，记录误识别或漏识别情况。
+4. 只在现场数据表明确需要时调整 `src/algorithms/color_detect.py` 的 HSV 范围，不要根据单张图片过拟合。
+5. 按 `Ctrl+C` 后立即重新运行摄像头测试，确认设备能再次打开。
+
+默认 `--min-area 1500` 适用于 640×480 起步验证。分辨率或目标距离变化较大时，需要按标注图重新选择面积阈值。
