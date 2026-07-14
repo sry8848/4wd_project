@@ -731,22 +731,58 @@ h2 {
   opacity: 1;
 }
 
-.car-marker.is-positioned::after {
-  content: "";
+.car-heading-indicator {
   position: absolute;
-  bottom: -8px;
-  width: 7px;
-  height: 7px;
-  border: 2px solid white;
-  border-radius: 50%;
-  background: var(--ink);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  z-index: 1;
+  left: 50%;
+  top: 50%;
+  width: 72px;
+  height: 72px;
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotate(0deg);
+  transition: transform 180ms ease;
 }
 
-.car-marker svg {
+.car-heading-indicator svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.car-heading-indicator polyline {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.car-marker[data-heading="east"] .car-heading-indicator {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.car-marker[data-heading="south"] .car-heading-indicator {
+  transform: translate(-50%, -50%) rotate(180deg);
+}
+
+.car-marker[data-heading="west"] .car-heading-indicator {
+  transform: translate(-50%, -50%) rotate(270deg);
+}
+
+.car-marker > svg {
+  position: relative;
+  z-index: 2;
   width: 27px;
   height: 27px;
   stroke-width: 2.2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .car-heading-indicator {
+    transition: none;
+  }
 }
 
 .map-legend {

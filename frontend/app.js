@@ -39,6 +39,7 @@ let activeRideId = null;
 let lastEventSeq = 0;
 let pollTimer = null;
 let obstacleRecords = new Map();
+let carHeading = "north";
 
 const terminalRideStatuses = new Set(["arrived", "failed", "canceled"]);
 const eventTypeLabels = {
@@ -47,6 +48,12 @@ const eventTypeLabels = {
   car: "小车",
   mail: "邮件",
   obstacle: "障碍",
+};
+const headingLabels = {
+  north: "上",
+  east: "右",
+  south: "下",
+  west: "左",
 };
 const cameraErrorImage = "/assets/camera-error.svg";
 
@@ -210,12 +217,26 @@ function addMessage(type, text, createdAt = null, obstacle = null) {
   return item;
 }
 
-function setCarPoint(point) {
+/**
+ * 更新地图小车的可信点位和朝向。
+ * @param {string} point 后端上报的网格点位。
+ * @param {string|null} heading north/east/south/west；不传时保留最近朝向。
+ * 分步逻辑：先同步有效朝向，再更新坐标、无障碍标签和可见状态。
+ */
+function setCarPoint(point, heading = null) {
+  if (Object.hasOwn(headingLabels, heading)) {
+    carHeading = heading;
+    carMarker.dataset.heading = heading;
+  }
   carPoint = point;
   carPositionText.textContent = point;
   const pos = pointToPercent(point);
   carMarker.style.left = `${pos.left}%`;
   carMarker.style.top = `${pos.top}%`;
+  carMarker.setAttribute(
+    "aria-label",
+    `小车当前位置 ${point}，朝向${headingLabels[carHeading]}`
+  );
   carMarker.classList.add("is-positioned");
 }
 
@@ -508,13 +529,14 @@ function syncRideForm(ride) {
 /**
  * 将后端行程状态渲染到地图、进度和操作控件。
  * @param {object} ride 后端行程状态。
+ * @param {string|null} heading 后端小车状态中的当前朝向。
  * @returns {boolean} 行程是否已经结束。
  * 分步逻辑：更新位置与路线，再根据终态锁定或解锁控件。
  */
-function renderRide(ride) {
+function renderRide(ride, heading = null) {
   const routeStops = [ride.start, ...ride.waypoints, ride.end];
   const isTerminal = terminalRideStatuses.has(ride.status);
-  setCarPoint(ride.current_position);
+  setCarPoint(ride.current_position, heading);
   etaText.textContent = ride.eta_text;
   renderRouteTitle(routeStops, ride.progress);
   paintRoute(ride.start, ride.end, ride.progress, ride.route);
@@ -631,7 +653,7 @@ async function loadObstacles() {
 /**
  * 同步一次活动行程及其增量事件，并安排下一轮轮询。
  * 参数说明：无，使用当前 activeRideId 和 lastEventSeq。
- * 分步逻辑：依次读取行程和事件，处理终态；失败时保持锁定并重试。
+ * 分步逻辑：并行读取行程、事件和朝向，处理终态；失败时保持锁定并重试。
  */
 async function pollRide() {
   pollTimer = null;
@@ -641,15 +663,16 @@ async function pollRide() {
   }
 
   try {
-    const ride = await requestJson(`/api/rides/${rideId}`);
-    const eventPage = await requestJson(
-      `/api/rides/${rideId}/events?after=${lastEventSeq}`
-    );
+    const [ride, eventPage, carStatus] = await Promise.all([
+      requestJson(`/api/rides/${rideId}`),
+      requestJson(`/api/rides/${rideId}/events?after=${lastEventSeq}`),
+      requestJson("/api/car/status"),
+    ]);
     if (activeRideId !== rideId) {
       return;
     }
 
-    const isTerminal = renderRide(ride);
+    const isTerminal = renderRide(ride, carStatus.heading);
     await appendRideEvents(eventPage);
     if (isTerminal) {
       activeRideId = null;
@@ -788,7 +811,7 @@ async function initializeApp() {
       requestJson("/api/rides/active"),
       requestJson("/api/obstacles"),
     ]);
-    setCarPoint(carStatus.current_position);
+    setCarPoint(carStatus.current_position, carStatus.heading);
     obstacleRecords = new Map(
       obstacles.map((record) => [record.id, record])
     );
