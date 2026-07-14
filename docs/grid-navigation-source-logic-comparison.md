@@ -97,16 +97,16 @@ and (left_outer == black or right_outer == black)
 默认入口参数在 `src/tools/test_grid_navigation.py`：
 
 - `--forward-speed` 默认 5。
-- `--line-turn-speed` 默认 80。
-- `--line-left-turn-speed` 默认 80。
-- `--line-right-turn-speed` 默认 100。
+- `--line-turn-speed` 默认 60。
+- `--line-left-turn-speed` 默认 60。
+- `--line-right-turn-speed` 默认 80。
 - `--search-speed` 默认 5。
-- `--node-center-speed` 默认 20，`--node-center-seconds` 默认 0.10。
+- `--node-center-speed` 默认 30，`--node-center-seconds` 默认 0.10。
 - `--reverse-speed` 默认 5，`--reverse-turn-speed` 默认 20。
 - `--line-debug` 默认关闭；开启后每轮打印四路读数、节点判断、动作和电机命令。
 - 你实测时传过 `--forward-speed 15 --line-turn-speed 50 --search-speed 6`。
 
-现在可以直接用不对称补偿参数贴近旧项目：左修正 `left(0,80)`，右修正 `right(100,0)`。
+当前仍保留右修正高于左修正的不对称补偿，但运行值已降为左修正 `left(0,60)`、右修正 `right(80,0)`。旧项目的 `80/100` 仅作对照，不再是当前默认值。
 
 ### 2.5 `LineFollower.step()` 的职责
 
@@ -466,7 +466,7 @@ if not run_track():
 
 如果继续出现“歪歪扭扭然后慢慢出线”，下一步应优先看左右修正速度、外侧传感器强修正和电机左右动力差异，而不是继续怀疑同步超声测距。
 
-### 9.2 左右修正缺少旧项目的不对称补偿
+### 9.2 左右不对称修正的参数演进
 
 当前：
 
@@ -475,7 +475,7 @@ left -> motor.left(0, left_turn_speed)
 right -> motor.right(right_turn_speed, 0)
 ```
 
-如果只传 `--line-turn-speed 50`，左右仍同速，便于保持旧命令行为。
+当前命令行和网页默认显式使用左修正 `60`、右修正 `80`。`--line-turn-speed` 是通用默认值，只有未分别提供左右速度时才作为共用值。
 
 旧项目：
 
@@ -484,9 +484,9 @@ left(0, 80)
 right(100, 0)
 ```
 
-这说明旧项目实车很可能存在左右轮动力差异，或者右修正需要更强。当前对称参数可能不足以把车拉回黑线。
+这说明旧项目实车很可能存在左右轮动力差异，或者右修正需要更强。当前保留“右强于左”的方向，同时将幅度降为 `60/80`，降低修正过度风险。
 
-现在可以用下面的参数测试旧项目补偿口径：
+当前网页对应的命令行参数如下：
 
 ```bash
 python3 -m src.tools.test_grid_navigation \
@@ -494,11 +494,11 @@ python3 -m src.tools.test_grid_navigation \
   --start A1 --end A2 \
   --heading east \
   --forward-speed 5 \
-  --line-turn-speed 80 \
-  --line-left-turn-speed 80 \
-  --line-right-turn-speed 100 \
+  --line-turn-speed 60 \
+  --line-left-turn-speed 60 \
+  --line-right-turn-speed 80 \
   --search-speed 5 \
-  --spin-speed 30 \
+  --spin-speed 25 \
   --left-turn-rough-seconds 0.4 \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
@@ -506,11 +506,11 @@ python3 -m src.tools.test_grid_navigation \
   --leave-node-min-seconds 0.10 \
   --node-clear-samples 1 \
   --node-confirm-samples 1 \
-  --node-center-speed 20 \
+  --node-center-speed 30 \
   --node-center-seconds 0.10 \
   --obstacle-confirm-samples 2 \
-  --line-acquire-timeout 3.0 \
-  --line-lost-timeout 5.0 \
+  --line-acquire-timeout 5.0 \
+  --line-lost-timeout 8.0 \
   --reverse-speed 5 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \

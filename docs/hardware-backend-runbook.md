@@ -151,11 +151,11 @@ curl http://127.0.0.1:8000/api/car/status
 
 ```text
 forward speed = 5
-line turn speed = 80
-left correction = 80
-right correction = 100
+line turn speed = 60
+left correction = 60
+right correction = 80
 search speed = 5
-spin speed = 30
+spin speed = 25
 left pre-turn = 0.4 秒
 right pre-turn = 0.3 秒
 left U-turn pre-turn = 0.8 秒
@@ -163,11 +163,11 @@ turn acquire timeout = 5.0 秒
 leave node minimum = 0.10 秒
 node clear samples = 1
 node confirm samples = 1
-node center speed = 20
+node center speed = 30
 node center time = 0.10 秒
 obstacle confirm samples = 2
-line acquire timeout = 3.0 秒
-line lost timeout = 5.0 秒
+line acquire timeout = 5.0 秒
+line lost timeout = 8.0 秒
 reverse speed = 5
 reverse correction speed = 20
 edge timeout = 20 秒

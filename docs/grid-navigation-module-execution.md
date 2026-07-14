@@ -229,7 +229,7 @@ LEAVE_NODE
   不认下一个节点
 
 EDGE_TRAVEL
-  全白以5直行，左修正80，右修正100
+  全白以5直行，左修正60，右修正80
   允许障碍门控检查 current planned_edge
   允许入点确认
 
@@ -321,7 +321,7 @@ turn_acquire_timeout = 5.0 秒
 search_speed = 5
 leave_node_min_seconds = 0.10 秒
 node_clear_samples = 1
-line_acquire_timeout = 3.0 秒
+line_acquire_timeout = 5.0 秒
 ```
 
 完整90°和180°实测时间仍是 `0.6/0.5/1.2/1.1` 秒；这里的 `0.4/0.3/0.8` 是故意不足的预转向，不表示已经重新测得完整角度。
@@ -402,7 +402,7 @@ node_confirm_samples = 1，单次检测到节点即确认
 确认后不再复用边上巡线速度，而是以独立节点居中速度向车头方向短暂前推：
 
 ```text
-node_center_speed = 20
+node_center_speed = 30
 node_center_seconds = 0.10 秒
 ```
 
@@ -453,7 +453,7 @@ EDGE_TRAVEL
 4. 左侧见黑时执行 `backward(20, 0)`，右侧见黑时执行 `backward(0, 20)`；修正只作用于当前一轮，下一轮恢复全白后立即恢复直线倒车。
 5. 沿原线退回起点节点。
 6. 稳定入点确认。
-7. 以 `node_center_speed=20` 向车头方向前推 `0.10s` 居中后停车。
+7. 以 `node_center_speed=30` 向车头方向前推 `0.10s` 居中后停车。
 8. 返回 `recovered_to_start_node`。
 
 实车已确认普通边居中时主要是四路全白，因此倒车不能把首次全白解释为丢线，也不能在全白后持续复用上一次弯曲修正。四路传感器无法区分“黑线位于中间”和“完全离开黑线”，所以倒车恢复不再单独使用全白丢线计时，统一由 `recovery_max_seconds=8` 限制最长运动时间；超时必须刹车并返回 `recovery_failed`。
@@ -510,10 +510,10 @@ canceled
 | 参数 | 当前值 | 使用位置 |
 | --- | ---: | --- |
 | `forward_speed` | `5` | 直行和出点 |
-| `line_left_turn_speed` | `80` | 走边左修正 |
-| `line_right_turn_speed` | `100` | 走边右修正 |
+| `line_left_turn_speed` | `60` | 走边左修正 |
+| `line_right_turn_speed` | `80` | 走边右修正 |
 | `search_speed` | `5` | 转向后的精细找线 |
-| `spin_speed` | `30` | 左右粗转和掉头粗转 |
+| `spin_speed` | `25` | 左右粗转和掉头粗转 |
 | `left_turn_rough_seconds` | `0.4s` | 左转预转 |
 | `right_turn_rough_seconds` | `0.3s` | 右转预转 |
 | `uturn_rough_seconds` | `0.8s` | 180度左预转 |
@@ -521,14 +521,14 @@ canceled
 | `leave_node_min_seconds` | `0.10s` | 最短出点时间 |
 | `node_clear_samples` | `1` | 出点全白确认次数 |
 | `node_confirm_samples` | `1` | 入点确认次数 |
-| `node_center_speed` | `20` | 入点后向车头方向前推的速度 |
+| `node_center_speed` | `30` | 入点后向车头方向前推的速度 |
 | `node_center_seconds` | `0.10s` | 入点后向车头方向前推的时间 |
 | `obstacle_confirm_samples` | `2` | 连续新鲜障碍读数确认次数 |
 | `ultrasonic_threshold_cm` | `20cm` | 动态障碍阈值 |
 | `ultrasonic_enabled` | `True` | 网页实车启用前向障碍检测 |
 | `reverse_radar_enabled` | `True` | 网页实车倒车期间启用蜂鸣提示 |
-| `line_acquire_timeout` | `3.0s` | 出点完成期限 |
-| `line_lost_timeout` | `5.0s` | 仅用于 `EDGE_TRAVEL` 全白安全上限 |
+| `line_acquire_timeout` | `5.0s` | 出点完成期限 |
+| `line_lost_timeout` | `8.0s` | 仅用于 `EDGE_TRAVEL` 全白安全上限 |
 | `reverse_speed` | `5` | 全白直线倒车 |
 | `reverse_turn_speed` | `20` | 倒车左右修正 |
 | `edge_max_seconds` | `20s` | 转向、出点、走边共享的单边总期限 |

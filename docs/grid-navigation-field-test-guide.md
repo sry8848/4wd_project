@@ -18,11 +18,11 @@ C1 -- C2 -- C3 -- C4 -- C5
 
 ```text
 forward-speed = 5
-line-turn-speed = 80
-line-left-turn-speed = 80
-line-right-turn-speed = 100
+line-turn-speed = 60
+line-left-turn-speed = 60
+line-right-turn-speed = 80
 search-speed = 5
-spin-speed = 30
+spin-speed = 25
 left-turn-rough-seconds = 0.4
 right-turn-rough-seconds = 0.3
 uturn-rough-seconds = 0.8（当前固定左旋）
@@ -30,11 +30,11 @@ turn-acquire-timeout = 5.0
 leave-node-min-seconds = 0.10
 node-clear-samples = 1
 node-confirm-samples = 1
-node-center-speed = 20
+node-center-speed = 30
 node-center-seconds = 0.10
 obstacle-confirm-samples = 2
-line-acquire-timeout = 3.0
-line-lost-timeout = 5.0
+line-acquire-timeout = 5.0
+line-lost-timeout = 8.0
 reverse-speed = 5
 reverse-turn-speed = 20
 edge-timeout = 20
@@ -124,11 +124,11 @@ python3 -m src.tools.test_grid_navigation \
   --start A1 --end A2 \
   --heading east \
   --forward-speed 5 \
-  --line-turn-speed 80 \
-  --line-left-turn-speed 80 \
-  --line-right-turn-speed 100 \
+  --line-turn-speed 60 \
+  --line-left-turn-speed 60 \
+  --line-right-turn-speed 80 \
   --search-speed 5 \
-  --spin-speed 30 \
+  --spin-speed 25 \
   --left-turn-rough-seconds 0.4 \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
@@ -136,11 +136,11 @@ python3 -m src.tools.test_grid_navigation \
   --leave-node-min-seconds 0.10 \
   --node-clear-samples 1 \
   --node-confirm-samples 1 \
-  --node-center-speed 20 \
+  --node-center-speed 30 \
   --node-center-seconds 0.10 \
   --obstacle-confirm-samples 2 \
-  --line-acquire-timeout 3.0 \
-  --line-lost-timeout 5.0 \
+  --line-acquire-timeout 5.0 \
+  --line-lost-timeout 8.0 \
   --reverse-speed 5 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \
@@ -154,8 +154,8 @@ python3 -m src.tools.test_grid_navigation \
 
 ```text
 line_debug LO=0 LI=1 RI=1 RO=0 node=0 action=forward motor=forward(5,5)
-line_debug LO=0 LI=1 RI=0 RO=0 node=0 action=left motor=left(0,80)
-line_debug LO=0 LI=0 RI=1 RO=0 node=0 action=right motor=right(100,0)
+line_debug LO=0 LI=1 RI=0 RO=0 node=0 action=left motor=left(0,60)
+line_debug LO=0 LI=0 RI=1 RO=0 node=0 action=right motor=right(80,0)
 line_debug LO=1 LI=1 RI=1 RO=0 node=1 action=node motor=brake()
 ```
 
@@ -203,11 +203,11 @@ python3 -m src.tools.test_grid_navigation \
   --start A1 --end C5 \
   --heading east \
   --forward-speed 5 \
-  --line-turn-speed 80 \
-  --line-left-turn-speed 80 \
-  --line-right-turn-speed 100 \
+  --line-turn-speed 60 \
+  --line-left-turn-speed 60 \
+  --line-right-turn-speed 80 \
   --search-speed 5 \
-  --spin-speed 30 \
+  --spin-speed 25 \
   --left-turn-rough-seconds 0.4 \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
@@ -215,11 +215,11 @@ python3 -m src.tools.test_grid_navigation \
   --leave-node-min-seconds 0.10 \
   --node-clear-samples 1 \
   --node-confirm-samples 1 \
-  --node-center-speed 20 \
+  --node-center-speed 30 \
   --node-center-seconds 0.10 \
   --obstacle-confirm-samples 2 \
-  --line-acquire-timeout 3.0 \
-  --line-lost-timeout 5.0 \
+  --line-acquire-timeout 5.0 \
+  --line-lost-timeout 8.0 \
   --reverse-speed 5 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \
@@ -266,11 +266,11 @@ python3 -m src.tools.test_grid_navigation \
   --heading east \
   --blocked-edge A1-A2 \
   --forward-speed 5 \
-  --line-turn-speed 80 \
-  --line-left-turn-speed 80 \
-  --line-right-turn-speed 100 \
+  --line-turn-speed 60 \
+  --line-left-turn-speed 60 \
+  --line-right-turn-speed 80 \
   --search-speed 5 \
-  --spin-speed 30 \
+  --spin-speed 25 \
   --left-turn-rough-seconds 0.4 \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
@@ -278,11 +278,11 @@ python3 -m src.tools.test_grid_navigation \
   --leave-node-min-seconds 0.10 \
   --node-clear-samples 1 \
   --node-confirm-samples 1 \
-  --node-center-speed 20 \
+  --node-center-speed 30 \
   --node-center-seconds 0.10 \
   --obstacle-confirm-samples 2 \
-  --line-acquire-timeout 3.0 \
-  --line-lost-timeout 5.0 \
+  --line-acquire-timeout 5.0 \
+  --line-lost-timeout 8.0 \
   --reverse-speed 5 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \
@@ -306,11 +306,11 @@ python3 -m src.tools.test_grid_navigation \
   --start A1 --end A2 \
   --heading east \
   --forward-speed 5 \
-  --line-turn-speed 80 \
-  --line-left-turn-speed 80 \
-  --line-right-turn-speed 100 \
+  --line-turn-speed 60 \
+  --line-left-turn-speed 60 \
+  --line-right-turn-speed 80 \
   --search-speed 5 \
-  --spin-speed 30 \
+  --spin-speed 25 \
   --left-turn-rough-seconds 0.4 \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
@@ -318,11 +318,11 @@ python3 -m src.tools.test_grid_navigation \
   --leave-node-min-seconds 0.10 \
   --node-clear-samples 1 \
   --node-confirm-samples 1 \
-  --node-center-speed 20 \
+  --node-center-speed 30 \
   --node-center-seconds 0.10 \
   --obstacle-confirm-samples 2 \
-  --line-acquire-timeout 3.0 \
-  --line-lost-timeout 5.0 \
+  --line-acquire-timeout 5.0 \
+  --line-lost-timeout 8.0 \
   --reverse-speed 5 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \
@@ -351,11 +351,11 @@ python3 -m src.tools.test_grid_navigation \
   --start A1 --end A2 \
   --heading east \
   --forward-speed 5 \
-  --line-turn-speed 80 \
-  --line-left-turn-speed 80 \
-  --line-right-turn-speed 100 \
+  --line-turn-speed 60 \
+  --line-left-turn-speed 60 \
+  --line-right-turn-speed 80 \
   --search-speed 5 \
-  --spin-speed 30 \
+  --spin-speed 25 \
   --left-turn-rough-seconds 0.4 \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
@@ -363,11 +363,11 @@ python3 -m src.tools.test_grid_navigation \
   --leave-node-min-seconds 0.10 \
   --node-clear-samples 1 \
   --node-confirm-samples 1 \
-  --node-center-speed 20 \
+  --node-center-speed 30 \
   --node-center-seconds 0.10 \
   --obstacle-confirm-samples 2 \
-  --line-acquire-timeout 3.0 \
-  --line-lost-timeout 5.0 \
+  --line-acquire-timeout 5.0 \
+  --line-lost-timeout 8.0 \
   --reverse-speed 5 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \
