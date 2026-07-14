@@ -57,6 +57,13 @@ LED_R_PIN = 22
 LED_G_PIN = 27
 LED_B_PIN = 24
 LED_PWM_FREQUENCY = 1000
+
+# 当前实机 Sanhao Face USB 摄像头的稳定 V4L2 路径。
+# 该 by-id 路径不会随 /dev/videoN 编号变化，但仅在系统识别摄像头时存在。
+CAMERA_DEVICE_PATH = (
+    "/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0"
+)
+
 # 摄像头两自由度云台配置。
 # Yahboom 树莓派 TCP_Control.py 使用 GPIO.BCM，并明确配置：
 # - ServoLeftRightPin = 11，对应接口表 J2 / BCM 11。
