@@ -321,6 +321,48 @@ class EdgeFollower:
         )
         return result
 
+    def resume_planned_edge(
+        self,
+        target_heading,
+        max_seconds,
+        cancel_requested_fn=None,
+    ):
+        """Resume line following from the middle of an already-entered edge.
+
+        Parameters:
+        target_heading: Trusted heading of the current planned edge.
+        max_seconds: Fresh timeout budget for the remaining edge travel.
+        cancel_requested_fn: Optional callback returning True for an emergency stop.
+
+        Steps:
+        Validate the fresh budget, check cancellation, and enter edge travel directly.
+        Alignment and node-departure phases must not run because the car is mid-edge.
+        """
+        if max_seconds <= 0:
+            raise ValueError("max_seconds must be > 0")
+        if target_heading not in _HEADINGS:
+            raise ValueError("target_heading must be north/east/south/west")
+        if self._cancel_requested(cancel_requested_fn):
+            return EdgeExecutionResult(
+                EDGE_CANCELED,
+                final_heading=target_heading,
+            )
+
+        deadline = self._time() + max_seconds
+        self._log(
+            f"edge_resume start target={target_heading} max_seconds={max_seconds}"
+        )
+        result = self._travel_edge(
+            deadline,
+            final_heading=target_heading,
+            cancel_requested_fn=cancel_requested_fn,
+        )
+        self._log(
+            f"edge_resume result status={result.status} "
+            f"reason={result.reason} final_heading={result.final_heading}"
+        )
+        return result
+
     def follow_edge(self, max_seconds):
         """Legacy wrapper that executes the current heading without alignment.
 

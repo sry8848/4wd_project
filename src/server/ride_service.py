@@ -32,6 +32,8 @@ from src.tasks.grid_navigation import (
     NAV_CANCELED,
     NAV_FAILED,
     NAV_NO_PATH,
+    OBSTACLE_ACTION_BLOCK_AND_RECOVER,
+    ObstacleDecision,
 )
 
 
@@ -179,6 +181,7 @@ class RideService:
                     from_node,
                     to_node,
                     distance_cm,
+                    _decision,
                     recovery_status,
                     _final_heading,
                 ):
@@ -233,6 +236,9 @@ class RideService:
                     point_to_coord(car_status.current_position),
                     point_to_coord(stop),
                     car_status.heading,
+                    obstacle_decision_fn=lambda _from, _to, _distance: ObstacleDecision(
+                        OBSTACLE_ACTION_BLOCK_AND_RECOVER
+                    ),
                     cancel_requested_fn=lambda: not self._is_active_ride(ride_id),
                     node_reached_fn=report_node,
                     stop_at_next_node_fn=lambda: self._is_cancel_requested(ride_id),

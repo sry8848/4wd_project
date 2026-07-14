@@ -26,6 +26,7 @@ class FakeNavigator:
         start,
         end,
         initial_heading,
+        obstacle_decision_fn,
         cancel_requested_fn=None,
         node_reached_fn=None,
         stop_at_next_node_fn=None,
@@ -356,18 +357,25 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             def navigate(self, *args, **kwargs):
                 if not hasattr(self, "obstacle_reported"):
                     self.obstacle_reported = True
+                    self.obstacle_decision = kwargs["obstacle_decision_fn"](
+                        (2, 2), (2, 3), 12.5
+                    )
                     kwargs["obstacle_result_fn"](
                         (2, 2),
                         (2, 3),
                         12.5,
+                        self.obstacle_decision,
                         "recovered_to_start_node",
                         "east",
                     )
                 return NAV_ARRIVED
 
-        finished = self.run_ride(ride.id, ObstacleNavigator([[], []]))
+        navigator = ObstacleNavigator([[], []])
+        finished = self.run_ride(ride.id, navigator)
 
         self.assertEqual(finished.status, "arrived")
+        self.assertEqual(navigator.obstacle_decision.action, "block_and_recover")
+        self.assertIsNone(navigator.obstacle_decision.context)
         self.obstacle_recorder.record.assert_called_once_with(
             ride_id=ride.id,
             from_point="C3",

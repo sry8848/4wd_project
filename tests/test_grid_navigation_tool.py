@@ -13,9 +13,11 @@ class FakeNavigator:
         self.current_node = None
         self.dynamic_blocked_edges = set()
         self.navigate_calls = []
+        self.obstacle_decision_fn = None
 
-    def navigate(self, start, end, initial_heading):
+    def navigate(self, start, end, initial_heading, obstacle_decision_fn):
         self.navigate_calls.append((start, end, initial_heading))
+        self.obstacle_decision_fn = obstacle_decision_fn
         self.current_node = end
         return "arrived"
 
@@ -73,6 +75,9 @@ class GridNavigationToolTest(unittest.TestCase):
             hardware.navigator.navigate_calls,
             [((0, 0), (0, 1), "east")],
         )
+        decision = hardware.navigator.obstacle_decision_fn((0, 0), (0, 1), 12.5)
+        self.assertEqual(decision.action, "block_and_recover")
+        self.assertIsNone(decision.context)
 
     def test_confirmed_real_car_defaults_are_forwarded(self):
         captured, _hardware, _output = self.run_tool()

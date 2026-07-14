@@ -394,6 +394,83 @@ class EdgeFollowerTest(unittest.TestCase):
 
         self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
 
+    def test_resume_planned_edge_skips_alignment_and_node_departure(self):
+        follower = self.build_follower(
+            [LINE_READING, NODE_READING, NODE_READING],
+            obstructed_values=[False, False, False],
+        )
+
+        result = follower.resume_planned_edge(
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+        self.assertEqual(result.final_heading, HEADING_EAST)
+        self.assertNotIn(("spin_left", 30, 30), self.motor.calls)
+        self.assertNotIn(("spin_right", 30, 30), self.motor.calls)
+        self.assertEqual(self.motor.calls[0], ("forward", 20, 20))
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_resume_planned_edge_uses_a_fresh_timeout_budget(self):
+        follower = self.build_follower(
+            [LINE_READING],
+            default_reading=LINE_READING,
+            line_lost_timeout=10,
+        )
+        self.clock.sleep(10)
+
+        result = follower.resume_planned_edge(
+            HEADING_EAST,
+            max_seconds=0.25,
+        )
+
+        self.assertEqual(result.status, EDGE_TIMEOUT)
+        self.assertGreaterEqual(self.clock.monotonic(), 10.25)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_resume_planned_edge_ignores_obstacle_cache_from_wait(self):
+        follower = self.build_follower(
+            [LINE_READING, NODE_READING, NODE_READING],
+            obstructed_values=[True, False, False],
+        )
+
+        result = follower.resume_planned_edge(
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_REACHED_NEXT_NODE)
+
+    def test_resume_planned_edge_can_report_a_second_obstacle(self):
+        follower = self.build_follower(
+            [LINE_READING, LINE_READING],
+            obstructed_values=[False, True],
+        )
+
+        result = follower.resume_planned_edge(
+            HEADING_EAST,
+            max_seconds=3,
+        )
+
+        self.assertEqual(result.status, EDGE_BLOCKED_ON_PLANNED_EDGE)
+        self.assertEqual(result.obstacle_distance_cm, 12.0)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
+    def test_resume_planned_edge_cancels_before_motion(self):
+        follower = self.build_follower([LINE_READING])
+
+        result = follower.resume_planned_edge(
+            HEADING_EAST,
+            max_seconds=3,
+            cancel_requested_fn=lambda: True,
+        )
+
+        self.assertEqual(result.status, EDGE_CANCELED)
+        self.assertEqual(result.final_heading, HEADING_EAST)
+        self.assertEqual(self.sensor.index, 0)
+        self.assertEqual(self.motor.calls[-1], ("brake",))
+
     def test_execute_planned_edge_cancels_during_rough_turn(self):
         follower = self.build_follower(
             [LINE_READING, LINE_READING],

@@ -1,5 +1,6 @@
 """Grid-level navigation state machine for black-line maps."""
 
+from dataclasses import dataclass
 import time
 
 from src.algorithms.astar import astar, format_path
@@ -21,7 +22,27 @@ NAV_NO_PATH = "no_path"
 NAV_FAILED = "failed"
 NAV_CANCELED = "canceled"
 
+OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE = "continue_current_edge"
+OBSTACLE_ACTION_BLOCK_AND_RECOVER = "block_and_recover"
+
 _HEADINGS = (HEADING_NORTH, HEADING_EAST, HEADING_SOUTH, HEADING_WEST)
+_OBSTACLE_ACTIONS = {
+    OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE,
+    OBSTACLE_ACTION_BLOCK_AND_RECOVER,
+}
+
+
+@dataclass(frozen=True)
+class ObstacleDecision:
+    """Navigation action selected for one confirmed obstacle.
+
+    Parameters:
+    action: One of the two OBSTACLE_ACTION_* constants in this module.
+    context: Immutable business result carried unchanged to the result callback.
+    """
+
+    action: str
+    context: object = None
 
 
 class GridNavigator:
@@ -80,6 +101,7 @@ class GridNavigator:
         start,
         end,
         initial_heading,
+        obstacle_decision_fn,
         cancel_requested_fn=None,
         node_reached_fn=None,
         stop_at_next_node_fn=None,
@@ -91,12 +113,14 @@ class GridNavigator:
         start: Start coordinate as (row, col).
         end: Target coordinate as (row, col).
         initial_heading: Trusted heading at the start node.
+        obstacle_decision_fn: Required callback returning ObstacleDecision for each
+            confirmed obstacle.
         cancel_requested_fn: Optional callback returning True when navigation must stop.
         node_reached_fn: Optional callback(node, heading) after reaching a trusted node.
         stop_at_next_node_fn: Optional callback for a graceful stop. When requested
             during an edge, finish that edge and stop at the confirmed next node.
-        obstacle_result_fn: Optional callback receiving the blocked edge, confirmed
-            distance, recovery result, and final heading after recovery finishes.
+        obstacle_result_fn: Optional callback receiving the edge, confirmed distance,
+            decision, handling result, and final heading while the car is stopped.
 
         Steps:
         Check cancellation before each planning/execution phase, pass the same signal
@@ -104,6 +128,9 @@ class GridNavigator:
         """
         if initial_heading not in _HEADINGS:
             raise ValueError("initial_heading must be north/east/south/west")
+        if not callable(obstacle_decision_fn):
+            self.motor.brake()
+            raise TypeError("obstacle_decision_fn must be callable")
 
         self.current_node = start
         self.target_node = end
@@ -149,6 +176,115 @@ class GridNavigator:
                 self.edge_max_seconds,
                 cancel_requested_fn=cancel_requested_fn,
             )
+            while _result_status(edge_result) == EDGE_BLOCKED_ON_PLANNED_EDGE:
+                self.motor.brake()
+                self._log(
+                    f"nav obstacle edge={_fmt_node(self.current_node)}-"
+                    f"{_fmt_node(next_node)} distance_cm="
+                    f"{edge_result.obstacle_distance_cm}"
+                )
+                decision = self._request_obstacle_decision(
+                    obstacle_decision_fn,
+                    self.current_node,
+                    next_node,
+                    edge_result.obstacle_distance_cm,
+                )
+                if self._cancel_requested(cancel_requested_fn):
+                    return NAV_CANCELED
+
+                graceful_stop_requested = self._graceful_stop_requested(
+                    stop_at_next_node_fn
+                )
+                if (
+                    graceful_stop_requested
+                    and decision.action == OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE
+                ):
+                    decision = ObstacleDecision(
+                        OBSTACLE_ACTION_BLOCK_AND_RECOVER,
+                        context=decision.context,
+                    )
+                    self._log("nav obstacle decision overridden for graceful stop")
+
+                if decision.action == OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE:
+                    self._report_obstacle_result(
+                        obstacle_result_fn,
+                        self.current_node,
+                        next_node,
+                        edge_result.obstacle_distance_cm,
+                        decision,
+                        OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE,
+                        target_heading,
+                    )
+                    edge_result = self.edge_follower.resume_planned_edge(
+                        target_heading,
+                        self.edge_max_seconds,
+                        cancel_requested_fn=cancel_requested_fn,
+                    )
+                    self._log(
+                        f"nav resume_result status={_result_status(edge_result)} "
+                        f"reason={getattr(edge_result, 'reason', None)} "
+                        f"at={_fmt_node(self.current_node)}"
+                    )
+                    continue
+
+                self.dynamic_blocked_edges.add(planned_edge)
+                return_heading = target_heading
+                self._log(
+                    f"nav block edge={_fmt_node(self.current_node)}-"
+                    f"{_fmt_node(next_node)} recover_heading={return_heading}"
+                )
+                recovery_result = self.edge_follower.recover_to_start_node(
+                    return_heading=return_heading,
+                    max_seconds=self.recovery_max_seconds,
+                    cancel_requested_fn=cancel_requested_fn,
+                )
+                recovery_status = _result_status(recovery_result)
+                self._log(
+                    f"nav recovery_result status={recovery_status} "
+                    f"reason={getattr(recovery_result, 'reason', None)}"
+                )
+                if recovery_status == EDGE_CANCELED:
+                    return self._finish_canceled()
+                if recovery_status != EDGE_RECOVERED_TO_START_NODE:
+                    self.motor.brake()
+                    self._report_obstacle_result(
+                        obstacle_result_fn,
+                        self.current_node,
+                        next_node,
+                        edge_result.obstacle_distance_cm,
+                        decision,
+                        recovery_status,
+                        _result_final_heading(recovery_result),
+                    )
+                    return NAV_FAILED
+
+                self.current_heading = _result_final_heading(
+                    recovery_result,
+                    default=return_heading,
+                )
+                self._log(
+                    f"nav recovered at={_fmt_node(self.current_node)} "
+                    f"heading={self.current_heading}"
+                )
+                self._report_obstacle_result(
+                    obstacle_result_fn,
+                    self.current_node,
+                    next_node,
+                    edge_result.obstacle_distance_cm,
+                    decision,
+                    recovery_status,
+                    self.current_heading,
+                )
+                if graceful_stop_requested or self._graceful_stop_requested(
+                    stop_at_next_node_fn
+                ):
+                    return NAV_CANCELED
+                edge_result = None
+                break
+
+            if edge_result is None:
+                continue
+
             edge_status = _result_status(edge_result)
             self._log(
                 f"nav edge_result status={edge_status} "
@@ -172,60 +308,9 @@ class GridNavigator:
                     except Exception:
                         self.motor.brake()
                         raise
-                if self._stop_at_node_requested(stop_at_next_node_fn):
+                if self._graceful_stop_requested(stop_at_next_node_fn):
                     return NAV_CANCELED
                 if self._cancel_requested(cancel_requested_fn):
-                    return NAV_CANCELED
-                continue
-
-            if edge_status == EDGE_BLOCKED_ON_PLANNED_EDGE:
-                self.dynamic_blocked_edges.add(planned_edge)
-                return_heading = target_heading
-                self._log(
-                    f"nav block edge={_fmt_node(self.current_node)}-"
-                    f"{_fmt_node(next_node)} recover_heading={return_heading}"
-                )
-                recovery_result = self.edge_follower.recover_to_start_node(
-                    return_heading=return_heading,
-                    max_seconds=self.recovery_max_seconds,
-                    cancel_requested_fn=cancel_requested_fn,
-                )
-                recovery_status = _result_status(recovery_result)
-                self._log(
-                    f"nav recovery_result status={recovery_status} "
-                    f"reason={getattr(recovery_result, 'reason', None)}"
-                )
-                if recovery_status == EDGE_CANCELED:
-                    return self._finish_canceled()
-                if recovery_status != EDGE_RECOVERED_TO_START_NODE:
-                    self.motor.brake()
-                    if obstacle_result_fn is not None:
-                        obstacle_result_fn(
-                            self.current_node,
-                            next_node,
-                            edge_result.obstacle_distance_cm,
-                            recovery_status,
-                            _result_final_heading(recovery_result),
-                        )
-                    return NAV_FAILED
-
-                self.current_heading = _result_final_heading(
-                    recovery_result,
-                    default=return_heading,
-                )
-                self._log(
-                    f"nav recovered at={_fmt_node(self.current_node)} "
-                    f"heading={self.current_heading}"
-                )
-                if obstacle_result_fn is not None:
-                    obstacle_result_fn(
-                        self.current_node,
-                        next_node,
-                        edge_result.obstacle_distance_cm,
-                        recovery_status,
-                        self.current_heading,
-                    )
-                if self._stop_at_node_requested(stop_at_next_node_fn):
                     return NAV_CANCELED
                 continue
 
@@ -268,13 +353,12 @@ class GridNavigator:
         self._log(f"nav canceled at={_fmt_node(self.current_node)}")
         return NAV_CANCELED
 
-    def _stop_at_node_requested(self, stop_at_next_node_fn):
-        """Check a graceful-stop request only while positioned at a trusted node.
+    def _graceful_stop_requested(self, stop_at_next_node_fn):
+        """Check whether the caller requests a stop at the next trusted node.
 
         Parameters:
-        stop_at_next_node_fn: Optional zero-argument callback. It is deliberately
-            not passed into EdgeFollower, so a request made between nodes cannot
-            stop the motors until the planned forward node is confirmed.
+        stop_at_next_node_fn: Optional zero-argument callback. The caller decides
+            whether the car must first recover from the middle of an edge.
         """
 
         if stop_at_next_node_fn is None:
@@ -286,8 +370,79 @@ class GridNavigator:
             raise
         if requested:
             self.motor.brake()
-            self._log(f"nav graceful_stop at={_fmt_node(self.current_node)}")
+            self._log(
+                f"nav graceful_stop requested last_trusted="
+                f"{_fmt_node(self.current_node)}"
+            )
         return requested
+
+    def _request_obstacle_decision(
+        self,
+        obstacle_decision_fn,
+        from_node,
+        to_node,
+        distance_cm,
+    ):
+        """Call and strictly validate the required obstacle decision boundary.
+
+        Parameters:
+        obstacle_decision_fn: Required business callback.
+        from_node/to_node: Planned edge containing the stopped car.
+        distance_cm: Confirmed obstacle distance from the edge follower.
+
+        Steps:
+        Invoke the callback while stopped, require the exact immutable result type,
+        and reject every action outside the two navigation actions.
+        """
+
+        try:
+            decision = obstacle_decision_fn(from_node, to_node, distance_cm)
+        except Exception:
+            self.motor.brake()
+            raise
+        if type(decision) is not ObstacleDecision:
+            self.motor.brake()
+            raise TypeError("obstacle_decision_fn must return ObstacleDecision")
+        if decision.action not in _OBSTACLE_ACTIONS:
+            self.motor.brake()
+            raise ValueError("unknown obstacle decision action")
+        self._log(f"nav obstacle decision action={decision.action}")
+        return decision
+
+    def _report_obstacle_result(
+        self,
+        obstacle_result_fn,
+        from_node,
+        to_node,
+        distance_cm,
+        decision,
+        handling_status,
+        final_heading,
+    ):
+        """Publish one stopped obstacle result and brake if the callback fails.
+
+        Parameters:
+        obstacle_result_fn: Optional persistence or event callback.
+        from_node/to_node/distance_cm: Confirmed obstacle location and distance.
+        decision: Validated immutable navigation decision.
+        handling_status: Continue action or actual recovery result.
+        final_heading: Trusted heading known when the callback runs.
+        """
+
+        if obstacle_result_fn is None:
+            return
+        try:
+            obstacle_result_fn(
+                from_node,
+                to_node,
+                distance_cm,
+                decision,
+                handling_status,
+                final_heading,
+            )
+        except Exception:
+            self.motor.brake()
+            raise
 
     def _all_blocked_edges(self):
         return self.static_blocked_edges | self.dynamic_blocked_edges

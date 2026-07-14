@@ -19,6 +19,8 @@ from src.tasks.grid_navigation import (
     HEADING_NORTH,
     HEADING_SOUTH,
     HEADING_WEST,
+    OBSTACLE_ACTION_BLOCK_AND_RECOVER,
+    ObstacleDecision,
 )
 
 
@@ -189,7 +191,14 @@ def main():
         print(f"static blocked edges: {len(static_blocked_edges)}")
         if args.debug:
             print("debug: on")
-        result = navigator.navigate(start, end, args.heading)
+        result = navigator.navigate(
+            start,
+            end,
+            args.heading,
+            obstacle_decision_fn=lambda _from, _to, _distance: ObstacleDecision(
+                OBSTACLE_ACTION_BLOCK_AND_RECOVER
+            ),
+        )
         print(f"navigation result: {result}")
         if navigator.current_node is not None:
             print(f"final node: {format_path([navigator.current_node])[0]}")
