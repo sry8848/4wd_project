@@ -65,10 +65,37 @@ const headingLabels = {
 };
 const obstacleHandlingLabels = {
   continued_current_edge: "已沿当前边继续",
-  blocked_and_replanned: "已恢复并绕行",
+  blocked_and_replanned: "已倒回并重新规划",
   canceled_after_recovery: "取消后已倒回",
   recovery_failed: "恢复失败",
 };
+const obstacleTypeLabels = {
+  ordinary: "普通障碍",
+  toll: "收费站",
+};
+const obstacleColorLabels = {
+  red: "红色",
+  blue: "蓝色",
+};
+const obstacleRecognitionErrorLabels = {
+  color_timeout: "未在时限内确认红色或蓝色",
+  color_conflict: "同时检测到红色和蓝色",
+  color_detection_error: "颜色识别算法异常",
+  camera_unavailable: "摄像头读取失败",
+  qr_timeout: "未在时限内识别收费站二维码",
+  qr_invalid_payload: "二维码内容不符合 TOLL:<站点ID>",
+  qr_detection_error: "二维码识别算法异常",
+  canceled: "识别已取消",
+};
+const obstacleRecoveryLabels = {
+  recovered: "已倒回可信节点",
+  recovery_failed: "未能倒回可信节点",
+};
+const obstacleProcessingStatuses = new Set([
+  "classifying_obstacle",
+  "scanning_toll_qr",
+  "waiting_toll_clearance",
+]);
 const cameraErrorImage = "/assets/camera-error.svg";
 
 function pointToCoord(point) {
@@ -677,23 +704,48 @@ function renderObstacles(records) {
     top.className = "obstacle-card-top";
     const title = document.createElement("h2");
     title.textContent = `${record.from_point} → ${record.to_point}`;
+    const badges = document.createElement("div");
+    badges.className = "obstacle-card-badges";
+    const typeBadge = document.createElement("span");
+    typeBadge.className = `obstacle-type ${record.obstacle_type}`;
+    typeBadge.textContent = obstacleTypeLabels[record.obstacle_type];
     const badge = document.createElement("span");
     badge.className = `obstacle-status ${record.handling_result}`;
     badge.textContent = obstacleHandlingLabels[record.handling_result];
-    top.append(title, badge);
+    badges.append(typeBadge, badge);
+    top.append(title, badges);
 
     const details = document.createElement("dl");
-    [
-      ["确认距离", `${record.distance_cm.toFixed(1)} cm`],
+    const detailRows = [
       [
-        "恢复点位",
-        record.recovered_point ||
-          (record.handling_result === "continued_current_edge"
-            ? "无需倒回"
-            : "未恢复到可信节点"),
+        "识别颜色",
+        record.detected_color === null
+          ? "颜色识别失败"
+          : obstacleColorLabels[record.detected_color],
       ],
-      ["记录时间", new Date(record.created_at).toLocaleString()],
-    ].forEach(([label, value]) => {
+      ["确认距离", `${record.distance_cm.toFixed(1)} cm`],
+      ["处理结果", obstacleHandlingLabels[record.handling_result]],
+      ["发现时间", new Date(record.created_at).toLocaleString()],
+    ];
+    if (record.station_id !== null) {
+      detailRows.splice(1, 0, ["收费站 ID", record.station_id]);
+    }
+    if (record.recognition_error !== null) {
+      detailRows.splice(-1, 0, [
+        "识别错误",
+        obstacleRecognitionErrorLabels[record.recognition_error],
+      ]);
+    }
+    if (record.recovery_status !== null) {
+      detailRows.splice(-1, 0, [
+        "恢复状态",
+        obstacleRecoveryLabels[record.recovery_status],
+      ]);
+    }
+    if (record.recovered_point !== null) {
+      detailRows.splice(-1, 0, ["恢复点位", record.recovered_point]);
+    }
+    detailRows.forEach(([label, value]) => {
       const term = document.createElement("dt");
       term.textContent = label;
       const description = document.createElement("dd");
@@ -968,6 +1020,7 @@ rideForm.addEventListener("submit", async (event) => {
       "hardware_not_ready",
       "camera_not_ready",
       "face_recognition_not_ready",
+      "obstacle_processing_not_ready",
     ]);
     if (
       !requestStarted
@@ -1037,11 +1090,14 @@ resetButton.addEventListener("click", async () => {
     "waiting_passenger_retry",
     "awaiting_boarding_confirmation",
   ]).has(activeRideStatus);
+  const processingObstacle = obstacleProcessingStatuses.has(activeRideStatus);
   showCurrentMessage(
     "系统",
     stationaryAtPickup
       ? "取消请求发送中，小车将保持在起点停车"
-      : "取消请求发送中，小车将继续到前方下一个节点停车"
+      : (processingObstacle
+          ? "取消请求发送中，小车将停止识别并倒回可信节点"
+          : "取消请求发送中，小车将继续到前方下一个节点停车")
   );
   try {
     await requestJson(`/api/rides/${rideId}/cancel`, { method: "POST" });

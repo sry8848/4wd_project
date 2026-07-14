@@ -50,11 +50,23 @@ from src.tasks.grid_navigation import (
 )
 from src.tasks.obstacle_visual_classification import (
     CLASSIFICATION_SUCCESS,
+    ERROR_CAMERA_UNAVAILABLE,
     ERROR_CANCELED,
+    ERROR_COLOR_CONFLICT,
+    ERROR_COLOR_DETECTION,
+    ERROR_COLOR_TIMEOUT,
+    ERROR_QR_DETECTION,
+    ERROR_QR_INVALID_PAYLOAD,
+    ERROR_QR_TIMEOUT,
     OBSTACLE_TYPE_TOLL,
     VISUAL_PHASE_SCANNING_TOLL_QR,
 )
-from src.tasks.toll_clearance import CLEARANCE_CLEARED, CLEARANCE_CANCELED
+from src.tasks.toll_clearance import (
+    CLEARANCE_CANCELED,
+    CLEARANCE_CLEARED,
+    CLEARANCE_ERROR,
+    CLEARANCE_TIMEOUT,
+)
 
 
 COMMAND_RETRY_FACE = "retry_face"
@@ -69,6 +81,19 @@ OBSTACLE_PROCESSING_STATUSES = (
     RIDE_STATUS_SCANNING_TOLL_QR,
     RIDE_STATUS_WAITING_TOLL_CLEARANCE,
 )
+VISUAL_FAILURE_MESSAGES = {
+    ERROR_COLOR_TIMEOUT: "未在时限内确认障碍颜色，正在倒回并重新规划",
+    ERROR_COLOR_CONFLICT: "同时检测到红色和蓝色，正在倒回并重新规划",
+    ERROR_COLOR_DETECTION: "颜色识别异常，正在倒回并重新规划",
+    ERROR_CAMERA_UNAVAILABLE: "摄像头读取失败，正在倒回并重新规划",
+    ERROR_QR_TIMEOUT: "收费站二维码识别超时，正在倒回并重新规划",
+    ERROR_QR_INVALID_PAYLOAD: "收费站二维码内容无效，正在倒回并重新规划",
+    ERROR_QR_DETECTION: "收费站二维码识别异常，正在倒回并重新规划",
+}
+TOLL_CLEARANCE_FAILURE_MESSAGES = {
+    CLEARANCE_TIMEOUT: "等待畅通超时，正在倒回并重新规划",
+    CLEARANCE_ERROR: "超声波读数异常，正在倒回并重新规划",
+}
 
 LOGGER = logging.getLogger(__name__)
 
@@ -266,7 +291,9 @@ class RideService:
                         else:
                             set_obstacle_stage(
                                 road_status,
-                                "障碍视觉识别失败，正在倒回并重新规划",
+                                VISUAL_FAILURE_MESSAGES[
+                                    visual_result.recognition_error
+                                ],
                             )
                         return ObstacleDecision(
                             OBSTACLE_ACTION_BLOCK_AND_RECOVER,
@@ -301,7 +328,8 @@ class RideService:
                     else:
                         set_obstacle_stage(
                             road_status,
-                            f"收费站 {visual_result.station_id} 等待畅通失败，正在倒回并重新规划",
+                            f"收费站 {visual_result.station_id} "
+                            f"{TOLL_CLEARANCE_FAILURE_MESSAGES[clearance.outcome]}",
                         )
                     return ObstacleDecision(
                         OBSTACLE_ACTION_BLOCK_AND_RECOVER,
@@ -365,7 +393,7 @@ class RideService:
 
                     status_text = {
                         HANDLING_CONTINUED_CURRENT_EDGE: "已沿当前边继续",
-                        HANDLING_BLOCKED_AND_REPLANNED: "已恢复并重新规划",
+                        HANDLING_BLOCKED_AND_REPLANNED: "已倒回并重新规划",
                         HANDLING_CANCELED_AFTER_RECOVERY: "取消后已倒回可信节点",
                         HANDLING_RECOVERY_FAILED: "恢复失败",
                     }[record.handling_result]

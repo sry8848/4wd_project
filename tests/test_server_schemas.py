@@ -5,6 +5,7 @@ from src.server.schemas import (
     CarStatusResponse,
     ErrorResponse,
     GridResponse,
+    ObstacleRecordResponse,
     RideCreateRequest,
     RideEventResponse,
     RideStatusResponse,
@@ -150,6 +151,48 @@ class ServerSchemasTest(unittest.TestCase):
         )
         self.assertEqual(event.to_dict()["type"], "car")
         self.assertIsNone(event.to_dict()["obstacle_id"])
+
+    def test_obstacle_response_serializes_complete_frontend_contract(self):
+        response = ObstacleRecordResponse(
+            id="obstacle_20260714_100000_123456_C3_C4",
+            ride_id="ride-1",
+            created_at="2026-07-14T10:00:00+00:00",
+            from_point="C3",
+            to_point="C4",
+            distance_cm=12.5,
+            obstacle_type="toll",
+            detected_color="blue",
+            classification_status="success",
+            station_id="GATE1",
+            recognition_error=None,
+            handling_result="continued_current_edge",
+            recovery_status=None,
+            recovered_point=None,
+            image_url="/api/obstacles/obstacle_20260714_100000_123456_C3_C4/image",
+            capture_error=None,
+        )
+
+        self.assertEqual(
+            response.to_dict(),
+            {
+                "id": "obstacle_20260714_100000_123456_C3_C4",
+                "ride_id": "ride-1",
+                "created_at": "2026-07-14T10:00:00+00:00",
+                "from_point": "C3",
+                "to_point": "C4",
+                "distance_cm": 12.5,
+                "obstacle_type": "toll",
+                "detected_color": "blue",
+                "classification_status": "success",
+                "station_id": "GATE1",
+                "recognition_error": None,
+                "handling_result": "continued_current_edge",
+                "recovery_status": None,
+                "recovered_point": None,
+                "image_url": "/api/obstacles/obstacle_20260714_100000_123456_C3_C4/image",
+                "capture_error": None,
+            },
+        )
 
 
 if __name__ == "__main__":

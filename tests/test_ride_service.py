@@ -11,7 +11,9 @@ from src.tasks.face_verification import FACE_MATCHED, FaceVerificationResult
 from src.tasks.face_verification import FACE_TIMEOUT
 from src.tasks.grid_navigation import NAV_ARRIVED, NAV_CANCELED, NAV_NO_PATH
 from src.tasks.obstacle_visual_classification import (
+    CLASSIFICATION_FAILED,
     CLASSIFICATION_SUCCESS,
+    ERROR_QR_TIMEOUT,
     OBSTACLE_TYPE_ORDINARY,
     OBSTACLE_TYPE_TOLL,
     ObstacleVisualResult,
@@ -19,6 +21,7 @@ from src.tasks.obstacle_visual_classification import (
 from src.tasks.toll_clearance import (
     CLEARANCE_CANCELED,
     CLEARANCE_CLEARED,
+    CLEARANCE_TIMEOUT,
     TollClearanceResult,
 )
 
@@ -560,6 +563,72 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             handling_result="canceled_after_recovery",
             recovery_status="recovered",
             recovered_point="C3",
+        )
+
+    def test_qr_timeout_publishes_specific_business_message(self):
+        ride = self.submit(start="C4", end="C5")
+        failed_visual = ObstacleVisualResult(
+            OBSTACLE_TYPE_ORDINARY,
+            "blue",
+            CLASSIFICATION_FAILED,
+            None,
+            ERROR_QR_TIMEOUT,
+            object(),
+        )
+        self.obstacle_visual_task.classify.return_value = failed_visual
+
+        class FailedQRNavigator(FakeNavigator):
+            def navigate(self, *args, **kwargs):
+                if not hasattr(self, "obstacle_decision"):
+                    self.obstacle_decision = kwargs["obstacle_decision_fn"](
+                        (2, 2), (2, 3), 12.5
+                    )
+                return NAV_ARRIVED
+
+        navigator = FailedQRNavigator([[], []])
+        finished = self.run_ride(ride.id, navigator)
+
+        self.assertEqual(finished.status, "arrived")
+        self.assertEqual(navigator.obstacle_decision.action, "block_and_recover")
+        events, _next_after = self.state.list_ride_events(ride.id)
+        self.assertTrue(
+            any("收费站二维码识别超时" in event.text for event in events)
+        )
+
+    def test_toll_clearance_timeout_publishes_station_specific_message(self):
+        ride = self.submit(start="C4", end="C5")
+        self.obstacle_visual_task.classify.return_value = ObstacleVisualResult(
+            OBSTACLE_TYPE_TOLL,
+            "blue",
+            CLASSIFICATION_SUCCESS,
+            "GATE1",
+            None,
+            object(),
+        )
+        self.toll_clearance_task.wait.return_value = TollClearanceResult(
+            CLEARANCE_TIMEOUT,
+            10.0,
+        )
+
+        class TimedOutTollNavigator(FakeNavigator):
+            def navigate(self, *args, **kwargs):
+                if not hasattr(self, "obstacle_decision"):
+                    self.obstacle_decision = kwargs["obstacle_decision_fn"](
+                        (2, 2), (2, 3), 12.5
+                    )
+                return NAV_ARRIVED
+
+        navigator = TimedOutTollNavigator([[], []])
+        finished = self.run_ride(ride.id, navigator)
+
+        self.assertEqual(finished.status, "arrived")
+        self.assertEqual(navigator.obstacle_decision.action, "block_and_recover")
+        events, _next_after = self.state.list_ride_events(ride.id)
+        self.assertTrue(
+            any(
+                "收费站 GATE1 等待畅通超时" in event.text
+                for event in events
+            )
         )
 
 

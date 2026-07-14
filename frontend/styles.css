@@ -553,6 +553,7 @@ h2 {
   border-radius: 16px;
   background: var(--soft);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .message-list time {
@@ -889,6 +890,7 @@ body.selecting-end .legend-end {
 }
 
 .obstacle-card-content {
+  min-width: 0;
   padding: 24px;
 }
 
@@ -904,14 +906,45 @@ body.selecting-end .legend-end {
   margin-bottom: 0;
 }
 
+.obstacle-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.obstacle-type,
 .obstacle-status {
   flex: none;
   padding: 6px 10px;
   border-radius: 999px;
-  background: #e1f0e5;
-  color: #22613a;
   font-size: 12px;
   font-weight: 700;
+}
+
+.obstacle-type.ordinary {
+  background: #f3e7df;
+  color: #7a4529;
+}
+
+.obstacle-type.toll {
+  background: #e1ebf8;
+  color: #245485;
+}
+
+.obstacle-status.continued_current_edge {
+  background: #e1f0e5;
+  color: #22613a;
+}
+
+.obstacle-status.blocked_and_replanned {
+  background: #f6edcf;
+  color: #745b12;
+}
+
+.obstacle-status.canceled_after_recovery {
+  background: #ececec;
+  color: #4f4f4f;
 }
 
 .obstacle-status.recovery_failed {
@@ -979,8 +1012,10 @@ body.selecting-end .legend-end {
 }
 
 .obstacle-card dd {
+  min-width: 0;
   margin: 0;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .obstacle-capture-error {
@@ -1065,6 +1100,10 @@ body.selecting-end .legend-end {
   .obstacle-card-top {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .obstacle-card-badges {
+    justify-content: flex-start;
   }
 
   .obstacle-card {
