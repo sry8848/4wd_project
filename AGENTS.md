@@ -45,7 +45,7 @@
 
 `docs/` 是当前项目的加工后知识，优先级最高，适合快速决策。
 
-- `docs/reference-replica-plan.md`
+- `docs/参考项目复刻开发计划与架构规范.md`
   
   - 用途：查总体目标、复刻范围、阶段计划、推荐目录结构、模块边界、四人分工、验收标准。
 
@@ -120,14 +120,14 @@
 ```text
 docs/参考项目模块分析.md
 -> 参考项目/源代码/
--> docs/reference-replica-plan.md
+-> docs/参考项目复刻开发计划与架构规范.md
 -> 当前 src/ 对应模块
 ```
 
 查下一阶段开发安排：
 
 ```text
-docs/reference-replica-plan.md
+docs/参考项目复刻开发计划与架构规范.md
 -> 当前 src/ 目录
 -> 实机验证结果
 ```
