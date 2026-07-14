@@ -22,6 +22,12 @@
 
 注意：树莓派上 `python` 指向 Python 2.7。
 
+当前实机已确认的 Sanhao Face USB 摄像头稳定路径：
+
+- `/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0`
+- 后端启动时优先配置 `CAMERA_DEVICE` 为该路径，不要把可能随重启或重新插拔变化的 `/dev/video0` 当作固定路径。
+- 该路径只有在 Linux 已识别摄像头时才会存在；使用前通过 `readlink -f /dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0` 核对其当前指向。
+
 不要在树莓派上使用git命令，我们只复制src覆盖树莓派文件
 
 # Working Principles
