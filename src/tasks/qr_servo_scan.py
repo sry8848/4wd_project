@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 from typing import Callable, Optional, Sequence, Tuple
 
@@ -25,6 +25,7 @@ class QRServoScanResult:
         frames_scanned: 已交给二维码识别器的图像帧数。
         invalid_texts: 解码成功但格式无效的二维码文本。
         elapsed_seconds: 本次任务实际运行时间。
+        last_frame: 扫码期间最后取得的画面，供入口层在失败时保存诊断快照。
     """
 
     payload: Optional[QRCodePayload]
@@ -34,6 +35,7 @@ class QRServoScanResult:
     frames_scanned: int
     invalid_texts: Tuple[str, ...]
     elapsed_seconds: float
+    last_frame: Optional[object] = field(repr=False, compare=False)
 
 
 class QRCodeServoScanner:
@@ -102,6 +104,7 @@ class QRCodeServoScanner:
         positions_scanned = 0
         frames_scanned = 0
         invalid_texts = []
+        last_frame = None
 
         # 1. 外层改变上下视角，内层在当前高度从中心向左右扫描。
         for tilt_angle in normalized_tilt:
@@ -122,7 +125,7 @@ class QRCodeServoScanner:
 
                 # 2. 丢弃舵机运动期间积压的帧，使用稳定后的最新画面。
                 if discard_frames_after_move:
-                    self.camera.read_frame(
+                    last_frame = self.camera.read_frame(
                         warmup_frames=discard_frames_after_move - 1,
                         copy=False,
                     )
@@ -132,6 +135,7 @@ class QRCodeServoScanner:
                     if self._time() >= deadline:
                         break
                     frame = self.camera.read_frame(copy=False)
+                    last_frame = frame
                     frames_scanned += 1
                     for raw_text in self.recognizer.decode(frame):
                         try:
@@ -150,6 +154,7 @@ class QRCodeServoScanner:
                             frames_scanned=frames_scanned,
                             invalid_texts=invalid_texts,
                             started_at=started_at,
+                            last_frame=last_frame,
                         )
 
         return self._build_result(
@@ -160,6 +165,7 @@ class QRCodeServoScanner:
             frames_scanned=frames_scanned,
             invalid_texts=invalid_texts,
             started_at=started_at,
+            last_frame=last_frame,
         )
 
     def _build_result(
@@ -172,6 +178,7 @@ class QRCodeServoScanner:
         frames_scanned,
         invalid_texts,
         started_at,
+        last_frame,
     ) -> QRServoScanResult:
         """将识别内容、角度和运行统计汇总为不可变结果。"""
 
@@ -183,6 +190,7 @@ class QRCodeServoScanner:
             frames_scanned=frames_scanned,
             invalid_texts=tuple(invalid_texts),
             elapsed_seconds=max(0.0, self._time() - started_at),
+            last_frame=last_frame,
         )
 
     @staticmethod

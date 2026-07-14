@@ -41,6 +41,25 @@ class CaptureResult:
 
 
 @dataclass(frozen=True)
+class SavedFrameDiagnostics:
+    """Metadata for a diagnostic frame written from an active camera session.
+
+    Args:
+        path: Exact JPEG path written to disk.
+        width: Actual frame width in pixels.
+        height: Actual frame height in pixels.
+        mean_brightness: Mean grayscale brightness from 0 to 255.
+        sharpness: Laplacian-variance sharpness score; larger is usually clearer.
+    """
+
+    path: Path
+    width: int
+    height: int
+    mean_brightness: float
+    sharpness: float
+
+
+@dataclass(frozen=True)
 class OpenCVCameraSettings:
     """Optional OpenCV camera controls.
 
@@ -221,6 +240,45 @@ class OpenCVCameraSession:
         frame = self._read_frame(warmup_frames)
         # 2. Isolate the returned image from the capture buffer when requested.
         return frame.copy() if copy else frame
+
+    def save_diagnostic_frame(
+        self,
+        output_path: PathLike,
+        frame,
+    ) -> SavedFrameDiagnostics:
+        """Save an already-read frame and report image-quality diagnostics.
+
+        Args:
+            output_path: Exact JPEG path used for the diagnostic snapshot.
+            frame: OpenCV BGR image previously returned by read_frame().
+
+        Steps:
+        1. Validate that this session still owns OpenCV and that a frame exists.
+        2. Create the destination directory and write the exact supplied frame.
+        3. Return resolution, mean brightness and sharpness for terminal output.
+        """
+
+        if self._camera is None or self._cv2 is None:
+            raise CameraCaptureError("OpenCV camera session is not open")
+        if frame is None:
+            raise CameraCaptureError("Diagnostic frame is empty")
+
+        target_path = Path(output_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._cv2.imwrite(str(target_path), frame):
+            raise CameraCaptureError(
+                f"Failed to write diagnostic frame to {target_path}"
+            )
+
+        frame_height, frame_width = frame.shape[:2]
+        gray = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2GRAY)
+        return SavedFrameDiagnostics(
+            path=target_path,
+            width=int(frame_width),
+            height=int(frame_height),
+            mean_brightness=float(gray.mean()),
+            sharpness=sharpness_score(self._cv2, frame),
+        )
 
     def close(self) -> None:
         """Release the OpenCV camera resource."""

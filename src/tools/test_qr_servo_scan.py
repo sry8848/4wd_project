@@ -18,6 +18,11 @@ from src.algorithms.qr_detect import QRCodeRecognitionError, QRCodeRecognizer
 from src.hardware.camera import CameraCaptureError, OpenCVCameraSession
 from src.hardware.servo import ServoController, ServoError
 from src.tasks.qr_servo_scan import QRCodeServoScanner
+from src.tools.qr_scan_diagnostics import (
+    DEFAULT_QR_DIAGNOSTIC_DIR,
+    format_qr_snapshot_diagnostics,
+    save_qr_diagnostic_snapshot,
+)
 
 
 def parse_angle_list(value: str) -> Tuple[float, ...]:
@@ -46,11 +51,17 @@ def parse_args() -> argparse.Namespace:
     """解析摄像头、舵机扫描角度和超时参数。"""
 
     parser = argparse.ArgumentParser(description="双舵机云台自动搜索 TYPE:ID 二维码。")
-    parser.add_argument(
+    camera_source = parser.add_mutually_exclusive_group()
+    camera_source.add_argument(
         "--device",
         type=int,
-        default=1,
-        help="OpenCV 摄像头编号；当前普通拍照成功的编号为 1。",
+        default=0,
+        help="OpenCV 摄像头编号，默认与后端一致使用 0。",
+    )
+    camera_source.add_argument(
+        "--device-path",
+        type=Path,
+        help="稳定 V4L2 路径，例如 /dev/v4l/by-id/...-video-index0。",
     )
     parser.add_argument("--width", type=int, default=640, help="请求图像宽度。")
     parser.add_argument("--height", type=int, default=480, help="请求图像高度。")
@@ -102,7 +113,49 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="明确允许两个摄像头舵机运动；缺少时拒绝启动。",
     )
+    parser.add_argument(
+        "--diagnostic-dir",
+        type=Path,
+        default=DEFAULT_QR_DIAGNOSTIC_DIR,
+        help="超时或成功诊断照片的保存目录。",
+    )
+    parser.add_argument(
+        "--save-success-photo",
+        action="store_true",
+        help="识别成功时也保存对应画面，便于留存验收证据。",
+    )
     return parser.parse_args()
+
+
+def save_and_report_snapshot(camera, frame, output_dir, prefix) -> None:
+    """保存最后识别画面并输出路径、亮度和清晰度。
+
+    参数：
+        camera: 当前打开的 OpenCVCameraSession。
+        frame: 最后送入二维码识别器的画面。
+        output_dir: 诊断图片目录。
+        prefix: 区分超时或成功图片的文件名前缀。
+
+    分步逻辑：
+    1. 没有读取到画面时输出明确提示。
+    2. 保存画面并打印图像质量指标。
+    3. 保存失败只报告诊断错误，不覆盖原扫码结果。
+    """
+
+    try:
+        result = save_qr_diagnostic_snapshot(
+            camera,
+            frame,
+            output_dir=output_dir,
+            prefix=prefix,
+        )
+    except CameraCaptureError as exc:
+        print(f"诊断画面保存失败: {exc}", file=sys.stderr)
+        return
+    if result is None:
+        print("扫码期间没有取得任何画面，无法保存诊断照片。", file=sys.stderr)
+        return
+    print(f"诊断画面: {format_qr_snapshot_diagnostics(result)}", flush=True)
 
 
 def main() -> int:
@@ -120,9 +173,12 @@ def main() -> int:
         print("左右和上下舵机不能使用同一个 BCM 引脚。", file=sys.stderr)
         return 2
 
+    selected_device = (
+        str(args.device_path) if args.device_path is not None else args.device
+    )
     print("双舵机二维码搜索开始。", flush=True)
     print("预期格式: TYPE:ID，例如 TOLL:GATE1", flush=True)
-    print(f"摄像头: device={args.device}, {args.width}x{args.height}", flush=True)
+    print(f"摄像头: device={selected_device}, {args.width}x{args.height}", flush=True)
     print(f"左右舵机: BCM {args.pan_pin}, angles={args.pan_angles}", flush=True)
     print(f"上下舵机: BCM {args.tilt_pin}, angles={args.tilt_angles}", flush=True)
 
@@ -132,7 +188,7 @@ def main() -> int:
         with ExitStack() as stack:
             camera = stack.enter_context(
                 OpenCVCameraSession(
-                    device_index=args.device,
+                    device_index=selected_device,
                     width=args.width,
                     height=args.height,
                     warmup_frames=8,
@@ -177,6 +233,12 @@ def main() -> int:
                 print(f"识别到但格式无效: {invalid_text!r}", file=sys.stderr)
 
             if result.payload is None:
+                save_and_report_snapshot(
+                    camera,
+                    result.last_frame,
+                    args.diagnostic_dir,
+                    "qr_servo_timeout",
+                )
                 print("扫描结束，未识别到有效二维码。", file=sys.stderr)
                 return 1
 
@@ -186,6 +248,13 @@ def main() -> int:
             print(f"Identifier: {result.payload.identifier}")
             print(f"Pan angle: {result.pan_angle:.1f}")
             print(f"Tilt angle: {result.tilt_angle:.1f}")
+            if args.save_success_photo:
+                save_and_report_snapshot(
+                    camera,
+                    result.last_frame,
+                    args.diagnostic_dir,
+                    "qr_servo_success",
+                )
             return 0
     except (CameraCaptureError, QRCodeRecognitionError, ServoError, ValueError) as exc:
         print(f"双舵机二维码搜索失败: {exc}", file=sys.stderr)

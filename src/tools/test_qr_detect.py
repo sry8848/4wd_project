@@ -19,6 +19,11 @@ from src.algorithms.qr_detect import (
     parse_qr_payload,
 )
 from src.hardware.camera import CameraCaptureError, OpenCVCameraSession
+from src.tools.qr_scan_diagnostics import (
+    DEFAULT_QR_DIAGNOSTIC_DIR,
+    format_qr_snapshot_diagnostics,
+    save_qr_diagnostic_snapshot,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,7 +58,55 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Camera exposure warm-up time in seconds.",
     )
+    parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=2.0,
+        help="Print scan frame progress at this interval in seconds.",
+    )
+    parser.add_argument(
+        "--diagnostic-dir",
+        type=Path,
+        default=DEFAULT_QR_DIAGNOSTIC_DIR,
+        help="Directory used for timestamped timeout/success diagnostic JPEGs.",
+    )
+    parser.add_argument(
+        "--save-success-photo",
+        action="store_true",
+        help="Also save the frame that successfully decoded the QR code.",
+    )
     return parser.parse_args()
+
+
+def save_and_report_snapshot(camera, frame, output_dir, prefix) -> None:
+    """Best-effort save of one QR scan frame without changing scan outcome.
+
+    Args:
+        camera: Active OpenCVCameraSession.
+        frame: Last frame passed to QRCodeRecognizer.
+        output_dir: Destination directory for the timestamped JPEG.
+        prefix: ``qr_timeout`` or ``qr_success``.
+
+    Steps:
+    1. Skip with an explicit message if no frame was ever read.
+    2. Save and print image-quality metrics.
+    3. Report write failures without hiding the original scan result.
+    """
+
+    try:
+        result = save_qr_diagnostic_snapshot(
+            camera,
+            frame,
+            output_dir=output_dir,
+            prefix=prefix,
+        )
+    except CameraCaptureError as exc:
+        print(f"Failed to save diagnostic snapshot: {exc}", file=sys.stderr)
+        return
+    if result is None:
+        print("No camera frame was available for a diagnostic snapshot.", file=sys.stderr)
+        return
+    print(f"Diagnostic snapshot: {format_qr_snapshot_diagnostics(result)}", flush=True)
 
 
 def main() -> int:
@@ -62,6 +115,9 @@ def main() -> int:
     args = parse_args()
     if args.timeout <= 0:
         print("--timeout must be greater than 0", file=sys.stderr)
+        return 2
+    if args.progress_interval <= 0:
+        print("--progress-interval must be greater than 0", file=sys.stderr)
         return 2
 
     print("QR-code scan started.", flush=True)
@@ -72,7 +128,11 @@ def main() -> int:
     print(f"Camera: device={selected_device}, {args.width}x{args.height}", flush=True)
     print(f"Timeout: {args.timeout:.1f} seconds", flush=True)
 
-    deadline = time.monotonic() + args.timeout
+    started_at = time.monotonic()
+    deadline = started_at + args.timeout
+    next_progress_at = started_at + args.progress_interval
+    frames_scanned = 0
+    last_frame = None
     reported_invalid_texts = set()
 
     try:
@@ -88,6 +148,8 @@ def main() -> int:
             while time.monotonic() < deadline:
                 # 1. Read the latest camera frame.
                 frame = camera.read_frame()
+                last_frame = frame
+                frames_scanned += 1
                 # 2. Decode every QR code visible in this frame.
                 for raw_text in recognizer.decode(frame):
                     try:
@@ -108,7 +170,41 @@ def main() -> int:
                     print(f"Raw text: {payload.raw_text}")
                     print(f"Type: {payload.qr_type}")
                     print(f"Identifier: {payload.identifier}")
+                    print(
+                        f"Scan statistics: frames={frames_scanned}, "
+                        f"elapsed={time.monotonic() - started_at:.1f}s"
+                    )
+                    if args.save_success_photo:
+                        save_and_report_snapshot(
+                            camera,
+                            last_frame,
+                            args.diagnostic_dir,
+                            "qr_success",
+                        )
                     return 0
+
+                now = time.monotonic()
+                if now >= next_progress_at:
+                    height, width = frame.shape[:2]
+                    print(
+                        f"Scanning: frames={frames_scanned}, "
+                        f"elapsed={now - started_at:.1f}s, "
+                        f"resolution={width}x{height}",
+                        flush=True,
+                    )
+                    next_progress_at = now + args.progress_interval
+
+            print(
+                f"Scan statistics: frames={frames_scanned}, "
+                f"elapsed={time.monotonic() - started_at:.1f}s",
+                flush=True,
+            )
+            save_and_report_snapshot(
+                camera,
+                last_frame,
+                args.diagnostic_dir,
+                "qr_timeout",
+            )
 
     except (CameraCaptureError, QRCodeRecognitionError, ValueError) as exc:
         print(f"QR-code scan failed: {exc}", file=sys.stderr)
