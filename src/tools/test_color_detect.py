@@ -10,7 +10,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -29,12 +28,6 @@ from src.algorithms.color_detect import (
     ColorDetector,
 )
 from src.hardware.camera import CameraCaptureError, CameraDevice, OpenCVCameraSession
-from src.hardware.servo import ServoError
-from src.tasks.camera_servo_scan import CameraServoScanner
-from src.tools.camera_servo_support import (
-    add_camera_servo_arguments,
-    enter_camera_servos,
-)
 
 
 COLOR_LABELS = {
@@ -129,7 +122,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="标注图输出路径；默认保存到 captures/。",
     )
-    add_camera_servo_arguments(parser, default_frames_per_position=10)
     return parser.parse_args()
 
 
@@ -280,113 +272,6 @@ def run_camera(args: argparse.Namespace, detector: ColorDetector, cv2) -> int:
     return 1
 
 
-def run_camera_with_servos(
-    args: argparse.Namespace,
-    detector: ColorDetector,
-    cv2,
-) -> int:
-    """Search camera directions until one stable target color is confirmed.
-
-    Args:
-        args: Validated camera and shared servo-scan options.
-        detector: Configured HSV color detector.
-        cv2: Imported OpenCV module used to save the annotated result.
-
-    Steps:
-    1. Open one camera and both servos under a single ExitStack owner.
-    2. Reset color stability whenever the camera reaches a new direction.
-    3. Stop at the first stable color, save its frame and keep that direction.
-    """
-
-    selected_device = select_camera_device(args)
-    state = {
-        "position": None,
-        "previous_color": None,
-        "consecutive_frames": 0,
-    }
-
-    def detect_stable_color(scan_frame):
-        position = (scan_frame.pan_angle, scan_frame.tilt_angle)
-        if position != state["position"]:
-            state["position"] = position
-            state["previous_color"] = None
-            state["consecutive_frames"] = 0
-
-        result = detector.detect(scan_frame.frame)
-        dominant = result.dominant_color
-        if dominant is not None and dominant == state["previous_color"]:
-            state["consecutive_frames"] += 1
-        elif dominant is not None:
-            state["previous_color"] = dominant
-            state["consecutive_frames"] = 1
-        else:
-            state["previous_color"] = None
-            state["consecutive_frames"] = 0
-        if state["consecutive_frames"] >= args.stable_frames:
-            return result
-        return None
-
-    print(
-        "开始双舵机颜色搜索：camera={0}, timeout={1:.1f}s".format(
-            selected_device,
-            args.timeout,
-        ),
-        flush=True,
-    )
-    with ExitStack() as stack:
-        camera = stack.enter_context(
-            OpenCVCameraSession(
-                device_index=selected_device,
-                width=args.width,
-                height=args.height,
-                warmup_frames=5,
-                warmup_seconds=args.warmup_seconds,
-            )
-        )
-        pan_servo, tilt_servo = enter_camera_servos(stack, args)
-        scan_result = CameraServoScanner(
-            camera,
-            pan_servo,
-            tilt_servo,
-        ).scan(
-            detect_stable_color,
-            pan_angles=args.pan_angles,
-            tilt_angles=args.tilt_angles,
-            frames_per_position=args.frames_per_position,
-            discard_frames_after_move=args.discard_frames,
-            timeout_seconds=args.timeout,
-            progress_fn=lambda message: print(message, flush=True),
-        )
-
-        if scan_result.value is None:
-            print(
-                "颜色搜索结束：positions={0}, frames={1}, elapsed={2:.1f}s".format(
-                    scan_result.positions_scanned,
-                    scan_result.frames_scanned,
-                    scan_result.elapsed_seconds,
-                ),
-                file=sys.stderr,
-            )
-            return 1
-
-        output = build_output_path(args.output)
-        save_annotated_frame(
-            cv2,
-            detector,
-            scan_result.last_frame,
-            scan_result.value,
-            output,
-        )
-        print_result(scan_result.value, output)
-        print(
-            "云台方向：pan={0:.1f}, tilt={1:.1f}".format(
-                scan_result.pan_angle,
-                scan_result.tilt_angle,
-            )
-        )
-        return 0
-
-
 def main() -> int:
     """Run static-image or time-limited live-camera color recognition."""
 
@@ -396,11 +281,7 @@ def main() -> int:
 
         detector = ColorDetector(colors=args.colors, min_area=args.min_area)
         if args.image is not None:
-            if args.enable_servo_motion:
-                raise ValueError("--image 模式不能启用摄像头舵机")
             return run_image(args, detector, cv2)
-        if args.enable_servo_motion:
-            return run_camera_with_servos(args, detector, cv2)
         return run_camera(args, detector, cv2)
     except ImportError as exc:
         print(
@@ -408,7 +289,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    except (CameraCaptureError, ColorDetectionError, ServoError, ValueError) as exc:
+    except (CameraCaptureError, ColorDetectionError, ValueError) as exc:
         print("颜色识别失败：{0}".format(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:

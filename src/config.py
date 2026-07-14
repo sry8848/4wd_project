@@ -64,20 +64,6 @@ CAMERA_DEVICE_PATH = (
     "/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0"
 )
 
-# 摄像头两自由度云台配置。
-# Yahboom 树莓派 TCP_Control.py 使用 GPIO.BCM，并明确配置：
-# - ServoLeftRightPin = 11，对应接口表 J2 / BCM 11。
-# - ServoUpDownPin = 9，对应接口表 J3 / BCM 9。
-# 注意：BCM 9、11 同时属于 PS2 接口，启用摄像头云台时不能再启用 PS2。
-CAMERA_PAN_SERVO_PIN = 11
-CAMERA_TILT_SERVO_PIN = 9
-
-# 全景默认参数按参考项目“0-180 度、约 6 度一步”的思路设置。
-PANORAMA_START_ANGLE = 0
-PANORAMA_END_ANGLE = 180
-PANORAMA_FRAME_COUNT = 31
-PANORAMA_TILT_ANGLE = None
-
 # 四路巡线传感器引脚来自“环境说明/硬件接口速查手册.xlsx”的 BCM 列。
 # 传感器从小车左侧到右侧依次为：左1、左2、右1、右2。
 LINE_SENSOR_LEFT_OUTER_PIN = 3
