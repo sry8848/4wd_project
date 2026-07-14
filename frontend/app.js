@@ -63,6 +63,12 @@ const headingLabels = {
   south: "下",
   west: "左",
 };
+const obstacleHandlingLabels = {
+  continued_current_edge: "已沿当前边继续",
+  blocked_and_replanned: "已恢复并绕行",
+  canceled_after_recovery: "取消后已倒回",
+  recovery_failed: "恢复失败",
+};
 const cameraErrorImage = "/assets/camera-error.svg";
 
 function pointToCoord(point) {
@@ -651,7 +657,7 @@ function renderObstacles(records) {
   if (records.length === 0) {
     const empty = document.createElement("p");
     empty.className = "obstacle-empty";
-    empty.textContent = "暂无障碍记录。小车确认障碍并完成恢复后会显示在这里。";
+    empty.textContent = "暂无障碍记录。小车确认并处理障碍后会显示在这里。";
     obstacleList.append(empty);
     return;
   }
@@ -672,14 +678,20 @@ function renderObstacles(records) {
     const title = document.createElement("h2");
     title.textContent = `${record.from_point} → ${record.to_point}`;
     const badge = document.createElement("span");
-    badge.className = `obstacle-status ${record.status}`;
-    badge.textContent = record.status === "recovered" ? "已恢复并绕行" : "恢复失败";
+    badge.className = `obstacle-status ${record.handling_result}`;
+    badge.textContent = obstacleHandlingLabels[record.handling_result];
     top.append(title, badge);
 
     const details = document.createElement("dl");
     [
       ["确认距离", `${record.distance_cm.toFixed(1)} cm`],
-      ["恢复点位", record.recovered_point || "未恢复到可信节点"],
+      [
+        "恢复点位",
+        record.recovered_point ||
+          (record.handling_result === "continued_current_edge"
+            ? "无需倒回"
+            : "未恢复到可信节点"),
+      ],
       ["记录时间", new Date(record.created_at).toLocaleString()],
     ].forEach(([label, value]) => {
       const term = document.createElement("dt");

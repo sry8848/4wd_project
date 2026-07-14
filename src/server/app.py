@@ -23,12 +23,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src import config as project_config
 from src.algorithms.astar import PASSABLE
+from src.algorithms.color_detect import ColorDetectionError, ColorDetector
 from src.algorithms.face_recognition import (
     FaceRecognitionError,
     HaarFaceDetector,
     LocalFaceRecognizer,
 )
+from src.algorithms.qr_detect import QRCodeRecognitionError, QRCodeRecognizer
 from src.server.camera_runtime import BackendCamera, parse_camera_device
 from src.server.face_verification_store import (
     FACE_RECORD_ID_RE,
@@ -52,6 +55,10 @@ from src.server.schemas import (
     RideStatusResponse,
 )
 from src.tasks.face_verification import FaceVerificationTask
+from src.tasks.obstacle_visual_classification import (
+    ObstacleVisualClassificationTask,
+)
+from src.tasks.toll_clearance import TollClearanceTask
 
 
 LOGGER = logging.getLogger(__name__)
@@ -137,6 +144,8 @@ async def lifespan(app_instance: FastAPI):
     obstacle_recorder = ObstacleRecorder(obstacle_store, camera)
     face_verifier = None
     face_recorder = None
+    obstacle_visual_task = None
+    toll_clearance_task = None
     passenger_ids = ()
     try:
         detector = HaarFaceDetector()
@@ -153,11 +162,41 @@ async def lifespan(app_instance: FastAPI):
             face_recorder = FaceVerificationRecorder(face_verification_store, camera)
     except FaceRecognitionError as exc:
         LOGGER.warning("Face recognition unavailable at startup: %s", exc)
+    try:
+        if camera.available:
+            color_detector = ColorDetector(
+                colors=("red", "blue"),
+                min_area=project_config.OBSTACLE_COLOR_MIN_AREA,
+            )
+            qr_recognizer = QRCodeRecognizer()
+            obstacle_visual_task = ObstacleVisualClassificationTask(
+                color_detector,
+                qr_recognizer,
+                camera,
+                color_confirm_frames=(
+                    project_config.OBSTACLE_COLOR_CONFIRM_FRAMES
+                ),
+                color_timeout_seconds=(
+                    project_config.OBSTACLE_COLOR_TIMEOUT_SECONDS
+                ),
+                qr_timeout_seconds=project_config.TOLL_QR_TIMEOUT_SECONDS,
+            )
+    except (ColorDetectionError, QRCodeRecognitionError) as exc:
+        LOGGER.warning("Obstacle vision unavailable at startup: %s", exc)
+    if hardware.ultrasonic is not None:
+        toll_clearance_task = TollClearanceTask(
+            hardware.ultrasonic,
+            clear_threshold_cm=project_config.ULTRASONIC_THRESHOLD,
+            confirm_samples=project_config.TOLL_CLEARANCE_CONFIRM_SAMPLES,
+            timeout_seconds=project_config.TOLL_CLEARANCE_TIMEOUT_SECONDS,
+        )
     app_instance.state.navigation_hardware = hardware
     app_instance.state.backend_camera = camera
     app_instance.state.obstacle_recorder = obstacle_recorder
     app_instance.state.face_verifier = face_verifier
     app_instance.state.face_recorder = face_recorder
+    app_instance.state.obstacle_visual_task = obstacle_visual_task
+    app_instance.state.toll_clearance_task = toll_clearance_task
     app_instance.state.passenger_ids = passenger_ids
 
     try:
@@ -181,6 +220,8 @@ async def lifespan(app_instance: FastAPI):
                         app_instance.state.obstacle_recorder = None
                         app_instance.state.face_verifier = None
                         app_instance.state.face_recorder = None
+                        app_instance.state.obstacle_visual_task = None
+                        app_instance.state.toll_clearance_task = None
                         app_instance.state.passenger_ids = ()
 
 
@@ -190,6 +231,8 @@ app.state.backend_camera = None
 app.state.obstacle_recorder = None
 app.state.face_verifier = None
 app.state.face_recorder = None
+app.state.obstacle_visual_task = None
+app.state.toll_clearance_task = None
 app.state.passenger_ids = ()
 
 
@@ -411,6 +454,13 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
             "所选乘客不在当前已加载的人脸列表中",
             "passenger_id",
         )
+    obstacle_visual_task = app.state.obstacle_visual_task
+    toll_clearance_task = app.state.toll_clearance_task
+    if obstacle_visual_task is None or toll_clearance_task is None:
+        raise RuntimeStateError(
+            "obstacle_processing_not_ready",
+            "障碍视觉识别或收费站超声波确认能力尚未就绪",
+        )
 
     ride = ride_service.submit_ride(request)
     background_tasks.add_task(
@@ -420,6 +470,8 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
         obstacle_recorder,
         face_verifier,
         face_recorder,
+        obstacle_visual_task,
+        toll_clearance_task,
     )
     return ride
 

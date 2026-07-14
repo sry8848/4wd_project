@@ -21,6 +21,8 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         server_app.app.state.obstacle_recorder = None
         server_app.app.state.face_verifier = None
         server_app.app.state.face_recorder = None
+        server_app.app.state.obstacle_visual_task = None
+        server_app.app.state.toll_clearance_task = None
         server_app.app.state.passenger_ids = ()
 
     def test_configuration_requires_explicit_real_car_pose(self):
@@ -47,6 +49,8 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         camera = Mock()
         camera.available = True
         active_ride = SimpleNamespace(id="ride-1")
+        obstacle_visual_task = object()
+        toll_clearance_task = object()
 
         async def run_lifespan():
             with patch.object(
@@ -64,7 +68,23 @@ class ServerAppNavigationModeTest(unittest.TestCase):
             ), patch.object(
                 server_app.ride_service,
                 "force_cancel_ride",
-            ) as force_cancel_ride:
+            ) as force_cancel_ride, patch.object(
+                server_app,
+                "ColorDetector",
+                return_value=object(),
+            ), patch.object(
+                server_app,
+                "QRCodeRecognizer",
+                return_value=object(),
+            ), patch.object(
+                server_app,
+                "ObstacleVisualClassificationTask",
+                return_value=obstacle_visual_task,
+            ), patch.object(
+                server_app,
+                "TollClearanceTask",
+                return_value=toll_clearance_task,
+            ):
                 async with server_app.lifespan(server_app.app):
                     self.assertIs(
                         server_app.app.state.navigation_hardware,
@@ -73,6 +93,14 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                     self.assertIs(server_app.app.state.backend_camera, camera)
                     self.assertIsNotNone(
                         server_app.app.state.obstacle_recorder
+                    )
+                    self.assertIs(
+                        server_app.app.state.obstacle_visual_task,
+                        obstacle_visual_task,
+                    )
+                    self.assertIs(
+                        server_app.app.state.toll_clearance_task,
+                        toll_clearance_task,
                     )
                     factory.assert_called_once()
                     grid = factory.call_args.args[0]
@@ -91,6 +119,8 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         self.assertIsNone(server_app.app.state.navigation_hardware)
         self.assertIsNone(server_app.app.state.backend_camera)
         self.assertIsNone(server_app.app.state.obstacle_recorder)
+        self.assertIsNone(server_app.app.state.obstacle_visual_task)
+        self.assertIsNone(server_app.app.state.toll_clearance_task)
 
     def test_camera_start_failure_does_not_block_navigation_backend(self):
         hardware = Mock()
@@ -134,11 +164,15 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         camera = SimpleNamespace(available=True)
         face_verifier = object()
         face_recorder = object()
+        obstacle_visual_task = object()
+        toll_clearance_task = object()
         server_app.app.state.navigation_hardware = hardware
         server_app.app.state.backend_camera = camera
         server_app.app.state.obstacle_recorder = obstacle_recorder
         server_app.app.state.face_verifier = face_verifier
         server_app.app.state.face_recorder = face_recorder
+        server_app.app.state.obstacle_visual_task = obstacle_visual_task
+        server_app.app.state.toll_clearance_task = toll_clearance_task
         server_app.app.state.passenger_ids = ("Alice",)
         tasks = BackgroundTasks()
         with patch.object(
@@ -169,6 +203,8 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                 obstacle_recorder,
                 face_verifier,
                 face_recorder,
+                obstacle_visual_task,
+                toll_clearance_task,
             ),
         )
 
@@ -252,6 +288,34 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                 )
 
         self.assertEqual(context.exception.code, "camera_not_ready")
+        submit.assert_not_called()
+
+    def test_submit_rejects_unavailable_obstacle_processing_before_creating_ride(self):
+        server_app.app.state.navigation_hardware = SimpleNamespace(
+            navigator=object()
+        )
+        server_app.app.state.obstacle_recorder = object()
+        server_app.app.state.backend_camera = SimpleNamespace(available=True)
+        server_app.app.state.face_verifier = object()
+        server_app.app.state.face_recorder = object()
+        server_app.app.state.passenger_ids = ("Alice",)
+
+        with patch.object(server_app.ride_service, "submit_ride") as submit:
+            with self.assertRaises(RuntimeStateError) as context:
+                server_app.submit_ride(
+                    {
+                        "passenger_id": "Alice",
+                        "start": "A1",
+                        "waypoints": [],
+                        "end": "A2",
+                    },
+                    BackgroundTasks(),
+                )
+
+        self.assertEqual(
+            context.exception.code,
+            "obstacle_processing_not_ready",
+        )
         submit.assert_not_called()
 
     def test_retry_and_confirm_endpoints_reject_bodies_and_delegate(self):

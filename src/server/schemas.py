@@ -245,18 +245,20 @@ class RideEventResponse:
 
 @dataclass(frozen=True)
 class ObstacleRecordResponse:
-    """一次已确认障碍的持久化展示记录。
+    """一次已确认障碍的严格视觉与处理结果记录。
 
     参数说明：
     id: 障碍记录 ID，同时用于读取对应图片。
     ride_id: 发现障碍的行程 ID。
-    created_at: 完成恢复并保存记录的时间。
+    created_at: 完成处理并保存记录的时间。
     from_point/to_point: 被阻塞的有向网格边。
     distance_cm: 连续确认障碍时最后一次有效距离。
-    recovered_point: 成功恢复后的可信节点；恢复失败时为 None。
-    status: recovered 或 recovery_failed。
+    obstacle_type/detected_color/classification_status: 视觉分类事实。
+    station_id/recognition_error: 收费站编号或明确识别错误。
+    handling_result: 最终导航处理动作。
+    recovery_status/recovered_point: 倒车恢复事实；未倒车时为 None。
     image_url: 真实图片接口地址；没有真实图片时为 None。
-    capture_error: 抓拍失败原因；成功时为 None。
+    capture_error: 识别帧保存失败原因；成功时为 None。
     """
 
     id: str
@@ -265,8 +267,14 @@ class ObstacleRecordResponse:
     from_point: str
     to_point: str
     distance_cm: float
+    obstacle_type: str
+    detected_color: Optional[str]
+    classification_status: str
+    station_id: Optional[str]
+    recognition_error: Optional[str]
+    handling_result: str
+    recovery_status: Optional[str]
     recovered_point: Optional[str]
-    status: str
     image_url: Optional[str]
     capture_error: Optional[str]
 

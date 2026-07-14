@@ -64,6 +64,14 @@ CAMERA_DEVICE_PATH = (
     "/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0"
 )
 
+# 固定摄像头障碍视觉初始参数，实机标定阶段每次只调整一类变量。
+OBSTACLE_COLOR_MIN_AREA = 1500.0
+OBSTACLE_COLOR_CONFIRM_FRAMES = 3
+OBSTACLE_COLOR_TIMEOUT_SECONDS = 15.0
+TOLL_QR_TIMEOUT_SECONDS = 15.0
+TOLL_CLEARANCE_CONFIRM_SAMPLES = 3
+TOLL_CLEARANCE_TIMEOUT_SECONDS = 60.0
+
 # 四路巡线传感器引脚来自“环境说明/硬件接口速查手册.xlsx”的 BCM 列。
 # 传感器从小车左侧到右侧依次为：左1、左2、右1、右2。
 LINE_SENSOR_LEFT_OUTER_PIN = 3

@@ -10,6 +10,17 @@ from src.server.schemas import RideCreateRequest
 from src.tasks.face_verification import FACE_MATCHED, FaceVerificationResult
 from src.tasks.face_verification import FACE_TIMEOUT
 from src.tasks.grid_navigation import NAV_ARRIVED, NAV_CANCELED, NAV_NO_PATH
+from src.tasks.obstacle_visual_classification import (
+    CLASSIFICATION_SUCCESS,
+    OBSTACLE_TYPE_ORDINARY,
+    OBSTACLE_TYPE_TOLL,
+    ObstacleVisualResult,
+)
+from src.tasks.toll_clearance import (
+    CLEARANCE_CANCELED,
+    CLEARANCE_CLEARED,
+    TollClearanceResult,
+)
 
 
 class FakeNavigator:
@@ -64,6 +75,20 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             image_url="/api/face-verifications/face_20260714_100000_123456/image",
             image_error=None,
         )
+        self.obstacle_visual_task = Mock()
+        self.obstacle_visual_task.classify.return_value = ObstacleVisualResult(
+            OBSTACLE_TYPE_ORDINARY,
+            "red",
+            CLASSIFICATION_SUCCESS,
+            None,
+            None,
+            object(),
+        )
+        self.toll_clearance_task = Mock()
+        self.toll_clearance_task.wait.return_value = TollClearanceResult(
+            CLEARANCE_CLEARED,
+            30.0,
+        )
 
     def submit(self, start="A1", waypoints=None, end="E5"):
         request = RideCreateRequest.from_payload(
@@ -88,6 +113,8 @@ class RideServiceHardwareRideTest(unittest.TestCase):
                 self.obstacle_recorder,
                 self.face_verifier,
                 self.face_recorder,
+                self.obstacle_visual_task,
+                self.toll_clearance_task,
             )
 
         thread = Thread(target=target)
@@ -127,6 +154,8 @@ class RideServiceHardwareRideTest(unittest.TestCase):
                 self.obstacle_recorder,
                 self.face_verifier,
                 self.face_recorder,
+                self.obstacle_visual_task,
+                self.toll_clearance_task,
             )
 
         thread = Thread(target=target)
@@ -349,7 +378,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         record = SimpleNamespace(
             id="obstacle_20260714_083000_123456_C3_C4",
             distance_cm=12.5,
-            status="recovered",
+            handling_result="blocked_and_replanned",
         )
         self.obstacle_recorder.record.return_value = record
 
@@ -375,18 +404,163 @@ class RideServiceHardwareRideTest(unittest.TestCase):
 
         self.assertEqual(finished.status, "arrived")
         self.assertEqual(navigator.obstacle_decision.action, "block_and_recover")
-        self.assertIsNone(navigator.obstacle_decision.context)
+        self.assertIs(
+            navigator.obstacle_decision.context,
+            self.obstacle_visual_task.classify.return_value,
+        )
         self.obstacle_recorder.record.assert_called_once_with(
             ride_id=ride.id,
             from_point="C3",
             to_point="C4",
             distance_cm=12.5,
-            recovery_status="recovered_to_start_node",
+            visual_result=self.obstacle_visual_task.classify.return_value,
+            handling_result="blocked_and_replanned",
+            recovery_status="recovered",
+            recovered_point="C3",
         )
         events, _next_after = self.state.list_ride_events(ride.id)
-        obstacle_event = [event for event in events if event.type == "obstacle"][0]
+        obstacle_event = [
+            event for event in events if event.obstacle_id == record.id
+        ][0]
         self.assertEqual(obstacle_event.obstacle_id, record.id)
         self.assertIn("12.5 cm", obstacle_event.text)
+
+    def test_toll_gate_waits_for_clearance_then_continues_current_edge(self):
+        ride = self.submit(start="C4", end="C5")
+        toll_result = ObstacleVisualResult(
+            OBSTACLE_TYPE_TOLL,
+            "blue",
+            CLASSIFICATION_SUCCESS,
+            "GATE1",
+            None,
+            object(),
+        )
+
+        def classify(*, cancel_requested_fn, phase_changed_fn):
+            self.assertEqual(
+                self.state.get_ride(ride.id).status,
+                "classifying_obstacle",
+            )
+            self.assertFalse(cancel_requested_fn())
+            phase_changed_fn("scanning_toll_qr")
+            self.assertEqual(
+                self.state.get_ride(ride.id).status,
+                "scanning_toll_qr",
+            )
+            return toll_result
+
+        def wait_for_clearance(*, cancel_requested_fn):
+            waiting = self.state.get_ride(ride.id)
+            self.assertEqual(waiting.status, "waiting_toll_clearance")
+            self.assertIn("即将通过收费站", waiting.eta_text)
+            self.assertFalse(cancel_requested_fn())
+            return TollClearanceResult(CLEARANCE_CLEARED, 30.0)
+
+        self.obstacle_visual_task.classify.side_effect = classify
+        self.toll_clearance_task.wait.side_effect = wait_for_clearance
+        record = SimpleNamespace(
+            id="obstacle_20260714_083000_123456_C3_C4",
+            distance_cm=12.5,
+            handling_result="continued_current_edge",
+        )
+        self.obstacle_recorder.record.return_value = record
+
+        class TollNavigator(FakeNavigator):
+            def navigate(self, *args, **kwargs):
+                if not hasattr(self, "obstacle_reported"):
+                    self.obstacle_reported = True
+                    self.obstacle_decision = kwargs["obstacle_decision_fn"](
+                        (2, 2), (2, 3), 12.5
+                    )
+                    kwargs["obstacle_result_fn"](
+                        (2, 2),
+                        (2, 3),
+                        12.5,
+                        self.obstacle_decision,
+                        "continue_current_edge",
+                        "east",
+                    )
+                return NAV_ARRIVED
+
+        navigator = TollNavigator([[], []])
+        finished = self.run_ride(ride.id, navigator)
+
+        self.assertEqual(finished.status, "arrived")
+        self.assertEqual(
+            navigator.obstacle_decision.action,
+            "continue_current_edge",
+        )
+        self.assertIs(navigator.obstacle_decision.context, toll_result)
+        self.obstacle_recorder.record.assert_called_once_with(
+            ride_id=ride.id,
+            from_point="C3",
+            to_point="C4",
+            distance_cm=12.5,
+            visual_result=toll_result,
+            handling_result="continued_current_edge",
+            recovery_status=None,
+            recovered_point=None,
+        )
+
+    def test_cancel_during_toll_wait_forces_recovery_before_ride_cancels(self):
+        ride = self.submit(start="C4", end="C5")
+        toll_result = ObstacleVisualResult(
+            OBSTACLE_TYPE_TOLL,
+            "blue",
+            CLASSIFICATION_SUCCESS,
+            "GATE1",
+            None,
+            object(),
+        )
+        self.obstacle_visual_task.classify.return_value = toll_result
+
+        def cancel_during_wait(*, cancel_requested_fn):
+            canceling = self.service.request_cancel_ride(ride.id)
+            self.assertEqual(canceling.status, "canceling")
+            self.assertIn("倒回可信节点", canceling.eta_text)
+            self.assertTrue(cancel_requested_fn())
+            return TollClearanceResult(CLEARANCE_CANCELED, 10.0)
+
+        self.toll_clearance_task.wait.side_effect = cancel_during_wait
+        self.obstacle_recorder.record.return_value = SimpleNamespace(
+            id="obstacle_20260714_083000_123456_C3_C4",
+            distance_cm=12.5,
+            handling_result="canceled_after_recovery",
+        )
+
+        class CancelingTollNavigator(FakeNavigator):
+            def navigate(self, *args, **kwargs):
+                self.obstacle_decision = kwargs["obstacle_decision_fn"](
+                    (2, 2), (2, 3), 12.5
+                )
+                kwargs["obstacle_result_fn"](
+                    (2, 2),
+                    (2, 3),
+                    12.5,
+                    self.obstacle_decision,
+                    "recovered_to_start_node",
+                    "east",
+                )
+                return NAV_CANCELED
+
+        navigator = CancelingTollNavigator([[]])
+        finished = self.run_ride(ride.id, navigator)
+
+        self.assertEqual(finished.status, "canceled")
+        self.assertEqual(
+            navigator.obstacle_decision.action,
+            "block_and_recover",
+        )
+        self.obstacle_recorder.record.assert_called_once_with(
+            ride_id=ride.id,
+            from_point="C3",
+            to_point="C4",
+            distance_cm=12.5,
+            visual_result=toll_result,
+            handling_result="canceled_after_recovery",
+            recovery_status="recovered",
+            recovered_point="C3",
+        )
 
 
 if __name__ == "__main__":

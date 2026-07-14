@@ -11,21 +11,33 @@ from threading import Condition, RLock
 from typing import List
 
 from src.server.face_verification_store import FaceVerificationStoreError
+from src.server.obstacle_store import (
+    HANDLING_BLOCKED_AND_REPLANNED,
+    HANDLING_CANCELED_AFTER_RECOVERY,
+    HANDLING_CONTINUED_CURRENT_EDGE,
+    HANDLING_RECOVERY_FAILED,
+    RECOVERED,
+    RECOVERY_FAILED,
+)
 from src.server.point_codec import coord_to_point, point_to_coord
 from src.server.runtime_state import (
     RIDE_STATUS_ARRIVED,
     RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION,
     RIDE_STATUS_CANCELING,
     RIDE_STATUS_CANCELED,
+    RIDE_STATUS_CLASSIFYING_OBSTACLE,
     RIDE_STATUS_FAILED,
     RIDE_STATUS_IN_TRIP,
+    RIDE_STATUS_SCANNING_TOLL_QR,
     RIDE_STATUS_TO_PICKUP,
     RIDE_STATUS_VERIFYING_PASSENGER,
     RIDE_STATUS_WAITING_PASSENGER_RETRY,
+    RIDE_STATUS_WAITING_TOLL_CLEARANCE,
     RuntimeState,
     RuntimeStateError,
 )
 from src.server.schemas import RideCreateRequest, RideStatusResponse
+from src.tasks.edge_follow import EDGE_RECOVERED_TO_START_NODE
 from src.tasks.face_verification import FACE_CANCELED, FACE_MATCHED, FACE_TIMEOUT
 from src.tasks.grid_navigation import (
     NAV_ARRIVED,
@@ -33,8 +45,16 @@ from src.tasks.grid_navigation import (
     NAV_FAILED,
     NAV_NO_PATH,
     OBSTACLE_ACTION_BLOCK_AND_RECOVER,
+    OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE,
     ObstacleDecision,
 )
+from src.tasks.obstacle_visual_classification import (
+    CLASSIFICATION_SUCCESS,
+    ERROR_CANCELED,
+    OBSTACLE_TYPE_TOLL,
+    VISUAL_PHASE_SCANNING_TOLL_QR,
+)
+from src.tasks.toll_clearance import CLEARANCE_CLEARED, CLEARANCE_CANCELED
 
 
 COMMAND_RETRY_FACE = "retry_face"
@@ -43,6 +63,11 @@ STATIONARY_PICKUP_STATUSES = (
     RIDE_STATUS_VERIFYING_PASSENGER,
     RIDE_STATUS_WAITING_PASSENGER_RETRY,
     RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION,
+)
+OBSTACLE_PROCESSING_STATUSES = (
+    RIDE_STATUS_CLASSIFYING_OBSTACLE,
+    RIDE_STATUS_SCANNING_TOLL_QR,
+    RIDE_STATUS_WAITING_TOLL_CLEARANCE,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -105,6 +130,8 @@ class RideService:
         obstacle_recorder,
         face_verifier,
         face_recorder,
+        obstacle_visual_task,
+        toll_clearance_task,
     ):
         """使用已创建的 GridNavigator 执行真实分段行程。
 
@@ -114,6 +141,8 @@ class RideService:
         obstacle_recorder: 后端长期摄像头与 ObstacleStore 的业务组合对象。
         face_verifier: 使用后端唯一摄像头的指定乘客核验任务。
         face_recorder: 保存每次成功或超时结果的记录器。
+        obstacle_visual_task: 固定摄像头颜色与收费站二维码任务。
+        toll_clearance_task: 只读取超声波后台缓存的收费站畅通确认任务。
 
         分步逻辑：
         1. 按当前位置、起点、途径点、终点逐段调用真实导航。
@@ -144,6 +173,12 @@ class RideService:
 
                 car_status = self.state.get_car_status()
                 remaining_stops = stops[stop_index:]
+                segment_ride = self.state.get_ride(ride_id)
+                road_status = (
+                    RIDE_STATUS_IN_TRIP
+                    if segment_ride.status == RIDE_STATUS_IN_TRIP
+                    else RIDE_STATUS_TO_PICKUP
+                )
 
                 def report_node(node, heading):
                     with self._state_lock:
@@ -177,25 +212,140 @@ class RideService:
                         )
                         self.state.append_ride_event(ride_id, "car", message)
 
+                def set_obstacle_stage(status, message):
+                    """Publish one obstacle business stage without overwriting canceling."""
+
+                    with self._state_lock:
+                        if not self._is_active_ride(ride_id):
+                            return
+                        if self._is_cancel_requested(ride_id) and status != RIDE_STATUS_CANCELING:
+                            return
+                        self.state.update_ride(
+                            ride_id,
+                            status=status,
+                            eta_text=message,
+                        )
+                        self.state.append_ride_event(ride_id, "obstacle", message)
+
+                def decide_obstacle(from_node, to_node, distance_cm):
+                    """Run stopped visual classification and return one navigation action."""
+
+                    from_point = coord_to_point(from_node)
+                    to_point = coord_to_point(to_node)
+                    set_obstacle_stage(
+                        RIDE_STATUS_CLASSIFYING_OBSTACLE,
+                        f"检测到障碍 {from_point}—{to_point}，正在识别颜色",
+                    )
+
+                    def report_visual_phase(phase):
+                        if phase != VISUAL_PHASE_SCANNING_TOLL_QR:
+                            raise RuntimeError(f"未知障碍视觉阶段: {phase}")
+                        set_obstacle_stage(
+                            RIDE_STATUS_SCANNING_TOLL_QR,
+                            "已确认蓝色障碍，正在识别收费站二维码",
+                        )
+
+                    visual_result = obstacle_visual_task.classify(
+                        cancel_requested_fn=lambda: (
+                            not self._is_active_ride(ride_id)
+                            or self._is_cancel_requested(ride_id)
+                        ),
+                        phase_changed_fn=report_visual_phase,
+                    )
+                    if visual_result.obstacle_type != OBSTACLE_TYPE_TOLL:
+                        if visual_result.recognition_error == ERROR_CANCELED:
+                            set_obstacle_stage(
+                                RIDE_STATUS_CANCELING,
+                                "已停止障碍识别，正在倒回可信节点",
+                            )
+                        elif visual_result.classification_status == CLASSIFICATION_SUCCESS:
+                            set_obstacle_stage(
+                                road_status,
+                                "已确认红色普通障碍，正在倒回并重新规划",
+                            )
+                        else:
+                            set_obstacle_stage(
+                                road_status,
+                                "障碍视觉识别失败，正在倒回并重新规划",
+                            )
+                        return ObstacleDecision(
+                            OBSTACLE_ACTION_BLOCK_AND_RECOVER,
+                            context=visual_result,
+                        )
+
+                    set_obstacle_stage(
+                        RIDE_STATUS_WAITING_TOLL_CLEARANCE,
+                        f"已识别收费站 {visual_result.station_id}，即将通过收费站",
+                    )
+                    clearance = toll_clearance_task.wait(
+                        cancel_requested_fn=lambda: (
+                            not self._is_active_ride(ride_id)
+                            or self._is_cancel_requested(ride_id)
+                        )
+                    )
+                    if clearance.outcome == CLEARANCE_CLEARED:
+                        set_obstacle_stage(
+                            road_status,
+                            f"收费站 {visual_result.station_id} 前方已确认畅通，即将通过收费站",
+                        )
+                        return ObstacleDecision(
+                            OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE,
+                            context=visual_result,
+                        )
+
+                    if clearance.outcome == CLEARANCE_CANCELED:
+                        set_obstacle_stage(
+                            RIDE_STATUS_CANCELING,
+                            "已停止等待收费站，正在倒回可信节点",
+                        )
+                    else:
+                        set_obstacle_stage(
+                            road_status,
+                            f"收费站 {visual_result.station_id} 等待畅通失败，正在倒回并重新规划",
+                        )
+                    return ObstacleDecision(
+                        OBSTACLE_ACTION_BLOCK_AND_RECOVER,
+                        context=visual_result,
+                    )
+
                 def report_obstacle(
                     from_node,
                     to_node,
                     distance_cm,
-                    _decision,
-                    recovery_status,
+                    decision,
+                    handling_status,
                     _final_heading,
                 ):
-                    """在节点恢复和居中完成后保存并发布障碍记录。"""
+                    """Save the selected frame while stopped and publish the result."""
 
                     from_point = coord_to_point(from_node)
                     to_point = coord_to_point(to_node)
+                    if handling_status == OBSTACLE_ACTION_CONTINUE_CURRENT_EDGE:
+                        handling_result = HANDLING_CONTINUED_CURRENT_EDGE
+                        recovery_status = None
+                        recovered_point = None
+                    elif handling_status == EDGE_RECOVERED_TO_START_NODE:
+                        handling_result = (
+                            HANDLING_CANCELED_AFTER_RECOVERY
+                            if self._is_cancel_requested(ride_id)
+                            else HANDLING_BLOCKED_AND_REPLANNED
+                        )
+                        recovery_status = RECOVERED
+                        recovered_point = from_point
+                    else:
+                        handling_result = HANDLING_RECOVERY_FAILED
+                        recovery_status = RECOVERY_FAILED
+                        recovered_point = None
                     try:
                         record = obstacle_recorder.record(
                             ride_id=ride_id,
                             from_point=from_point,
                             to_point=to_point,
                             distance_cm=distance_cm,
+                            visual_result=decision.context,
+                            handling_result=handling_result,
                             recovery_status=recovery_status,
+                            recovered_point=recovered_point,
                         )
                     except Exception as exc:
                         LOGGER.exception(
@@ -213,11 +363,12 @@ class RideService:
                                 )
                         return
 
-                    status_text = (
-                        "已恢复并绕行"
-                        if record.status == "recovered"
-                        else "恢复失败"
-                    )
+                    status_text = {
+                        HANDLING_CONTINUED_CURRENT_EDGE: "已沿当前边继续",
+                        HANDLING_BLOCKED_AND_REPLANNED: "已恢复并重新规划",
+                        HANDLING_CANCELED_AFTER_RECOVERY: "取消后已倒回可信节点",
+                        HANDLING_RECOVERY_FAILED: "恢复失败",
+                    }[record.handling_result]
                     message = (
                         f"检测到障碍 {from_point}—{to_point}，"
                         f"确认距离 {record.distance_cm:.1f} cm，"
@@ -236,9 +387,7 @@ class RideService:
                     point_to_coord(car_status.current_position),
                     point_to_coord(stop),
                     car_status.heading,
-                    obstacle_decision_fn=lambda _from, _to, _distance: ObstacleDecision(
-                        OBSTACLE_ACTION_BLOCK_AND_RECOVER
-                    ),
+                    obstacle_decision_fn=decide_obstacle,
                     cancel_requested_fn=lambda: not self._is_active_ride(ride_id),
                     node_reached_fn=report_node,
                     stop_at_next_node_fn=lambda: self._is_cancel_requested(ride_id),
@@ -317,7 +466,10 @@ class RideService:
                 return canceled
 
             self._cancel_reasons[ride_id] = reason
-            message = "取消请求已收到，小车将在前方下一个节点停车"
+            if active_ride.status in OBSTACLE_PROCESSING_STATUSES:
+                message = "取消请求已收到，小车将停止识别并倒回可信节点"
+            else:
+                message = "取消请求已收到，小车将在前方下一个节点停车"
             ride = self.state.update_ride(
                 ride_id,
                 status=RIDE_STATUS_CANCELING,

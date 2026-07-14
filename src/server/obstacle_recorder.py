@@ -1,18 +1,17 @@
-"""Record one confirmed obstacle after edge recovery has finished."""
+"""Persist one stopped obstacle's selected visual frame and final handling facts."""
 
 from __future__ import annotations
 
 from src.hardware.camera import CameraCaptureError
-from src.server.obstacle_store import RECOVERED, RECOVERY_FAILED, ObstacleStore
-from src.tasks.edge_follow import EDGE_RECOVERED_TO_START_NODE
+from src.server.obstacle_store import ObstacleStore
 
 
 class ObstacleRecorder:
-    """组合长期摄像头与磁盘记录，但不参与导航决策。
+    """Combine the backend camera frame writer with strict obstacle storage.
 
-    参数说明：
-    store: JPEG 与同名 JSON 的持久化存储。
-    camera: 后端唯一的 BackendCamera 实例。
+    Parameters:
+    store: ObstacleStore owning the JSON/JPEG directory contract.
+    camera: BackendCamera owning the process's only camera session.
     """
 
     def __init__(self, store: ObstacleStore, camera):
@@ -26,32 +25,33 @@ class ObstacleRecorder:
         from_point: str,
         to_point: str,
         distance_cm: float,
-        recovery_status: str,
+        visual_result,
+        handling_result: str,
+        recovery_status,
+        recovered_point,
     ):
-        """在恢复流程结束后保存一条完整障碍记录。
+        """Save the exact classification frame and one final strict JSON record.
 
-        分步逻辑：
-        1. 预先分配记录 ID、时间和 JPEG 路径。
-        2. 只有成功回到可信起点并完成居中后才调用摄像头。
-        3. 无论是否拍到真实照片都保存 JSON，供重启后继续查看。
+        Steps:
+        Allocate one record identity, save the in-memory frame without re-reading the
+        camera, then persist JSON even when no frame exists or JPEG writing fails.
+        Navigation decisions are already final and are never changed by save errors.
         """
 
         record_id, created_at, image_path = self.store.prepare_record(
             from_point,
             to_point,
         )
-        recovered = recovery_status == EDGE_RECOVERED_TO_START_NODE
         image_filename = None
         capture_error = None
-
-        if recovered:
+        if visual_result.record_frame is None:
+            capture_error = "视觉识别没有可保存的原始帧"
+        else:
             try:
-                self.camera.capture(image_path)
+                self.camera.save_frame(image_path, visual_result.record_frame)
                 image_filename = image_path.name
             except CameraCaptureError as exc:
                 capture_error = str(exc)
-        else:
-            capture_error = "小车未安全恢复到可信节点，未执行抓拍"
 
         return self.store.save_record(
             record_id=record_id,
@@ -60,8 +60,14 @@ class ObstacleRecorder:
             from_point=from_point,
             to_point=to_point,
             distance_cm=distance_cm,
-            recovered_point=from_point if recovered else None,
-            status=RECOVERED if recovered else RECOVERY_FAILED,
+            obstacle_type=visual_result.obstacle_type,
+            detected_color=visual_result.detected_color,
+            classification_status=visual_result.classification_status,
+            station_id=visual_result.station_id,
+            recognition_error=visual_result.recognition_error,
+            handling_result=handling_result,
+            recovery_status=recovery_status,
+            recovered_point=recovered_point,
             image_filename=image_filename,
             capture_error=capture_error,
         )

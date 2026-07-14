@@ -8,13 +8,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+from src.algorithms.qr_detect import QR_IDENTIFIER_PATTERN
 from src.server.schemas import ObstacleRecordResponse
+from src.tasks.obstacle_visual_classification import (
+    CLASSIFICATION_FAILED,
+    CLASSIFICATION_SUCCESS,
+    OBSTACLE_TYPE_ORDINARY,
+    OBSTACLE_TYPE_TOLL,
+    VALID_RECOGNITION_ERRORS,
+)
 
 
-OBSTACLE_ID_RE = re.compile(r"^obstacle_[0-9]{8}_[0-9]{6}_[0-9]{6}_[A-E][1-5]_[A-E][1-5]$")
+OBSTACLE_ID_RE = re.compile(
+    r"^obstacle_[0-9]{8}_[0-9]{6}_[0-9]{6}_"
+    r"(?P<from_point>[A-E][1-5])_(?P<to_point>[A-E][1-5])$"
+)
 RECOVERED = "recovered"
 RECOVERY_FAILED = "recovery_failed"
-VALID_STATUSES = (RECOVERED, RECOVERY_FAILED)
+HANDLING_CONTINUED_CURRENT_EDGE = "continued_current_edge"
+HANDLING_BLOCKED_AND_REPLANNED = "blocked_and_replanned"
+HANDLING_CANCELED_AFTER_RECOVERY = "canceled_after_recovery"
+HANDLING_RECOVERY_FAILED = "recovery_failed"
+VALID_HANDLING_RESULTS = (
+    HANDLING_CONTINUED_CURRENT_EDGE,
+    HANDLING_BLOCKED_AND_REPLANNED,
+    HANDLING_CANCELED_AFTER_RECOVERY,
+    HANDLING_RECOVERY_FAILED,
+)
+VALID_RECOVERY_STATUSES = (RECOVERED, RECOVERY_FAILED, None)
+POINT_RE = re.compile(r"^[A-E][1-5]$")
 
 
 class ObstacleStoreError(RuntimeError):
@@ -62,19 +84,20 @@ class ObstacleStore:
         from_point: str,
         to_point: str,
         distance_cm: float,
+        obstacle_type: str,
+        detected_color: Optional[str],
+        classification_status: str,
+        station_id: Optional[str],
+        recognition_error: Optional[str],
+        handling_result: str,
+        recovery_status: Optional[str],
         recovered_point: Optional[str],
-        status: str,
         image_filename: Optional[str],
         capture_error: Optional[str],
     ) -> ObstacleRecordResponse:
         """严格按固定字段保存一条障碍 JSON，并返回前端响应。"""
 
         self._validate_id(record_id)
-        if status not in VALID_STATUSES:
-            raise ObstacleStoreError(f"不支持的障碍状态: {status}")
-        if image_filename is not None and Path(image_filename).name != image_filename:
-            raise ObstacleStoreError("image_filename 只能是障碍目录内的文件名")
-
         payload = {
             "id": record_id,
             "ride_id": ride_id,
@@ -82,11 +105,18 @@ class ObstacleStore:
             "from_point": from_point,
             "to_point": to_point,
             "distance_cm": float(distance_cm),
+            "obstacle_type": obstacle_type,
+            "detected_color": detected_color,
+            "classification_status": classification_status,
+            "station_id": station_id,
+            "recognition_error": recognition_error,
+            "handling_result": handling_result,
+            "recovery_status": recovery_status,
             "recovered_point": recovered_point,
-            "status": status,
             "image_filename": image_filename,
             "capture_error": capture_error,
         }
+        self._validate_payload(payload, "待保存记录")
         self.root_dir.mkdir(parents=True, exist_ok=True)
         target = self.root_dir / f"{record_id}.json"
         temporary = self.root_dir / f"{record_id}.json.tmp"
@@ -142,19 +172,125 @@ class ObstacleStore:
             "from_point",
             "to_point",
             "distance_cm",
+            "obstacle_type",
+            "detected_color",
+            "classification_status",
+            "station_id",
+            "recognition_error",
+            "handling_result",
+            "recovery_status",
             "recovered_point",
-            "status",
             "image_filename",
             "capture_error",
         }
         if not isinstance(payload, dict) or set(payload) != required_fields:
             raise ObstacleStoreError(f"障碍记录字段不符合契约: {path.name}")
-        if payload["status"] not in VALID_STATUSES:
-            raise ObstacleStoreError(f"障碍记录状态不符合契约: {path.name}")
-        filename = payload["image_filename"]
-        if filename is not None and Path(filename).name != filename:
-            raise ObstacleStoreError(f"障碍照片文件名不安全: {path.name}")
+        self._validate_payload(payload, path.name)
         return payload
+
+    def _validate_payload(self, payload, source_name):
+        """Validate untrusted JSON values and cross-field business invariants."""
+
+        self._validate_id(payload["id"])
+        id_match = OBSTACLE_ID_RE.fullmatch(payload["id"])
+        if not isinstance(payload["ride_id"], str) or not payload["ride_id"]:
+            raise ObstacleStoreError(f"障碍行程 ID 不符合契约: {source_name}")
+        try:
+            created_at = datetime.fromisoformat(payload["created_at"])
+        except (TypeError, ValueError) as exc:
+            raise ObstacleStoreError(
+                f"障碍记录时间不符合契约: {source_name}"
+            ) from exc
+        if created_at.tzinfo is None:
+            raise ObstacleStoreError(f"障碍记录时间不符合契约: {source_name}")
+        if (
+            not isinstance(payload["from_point"], str)
+            or not isinstance(payload["to_point"], str)
+            or not POINT_RE.fullmatch(payload["from_point"])
+            or not POINT_RE.fullmatch(payload["to_point"])
+        ):
+            raise ObstacleStoreError(f"障碍点位不符合契约: {source_name}")
+        if (
+            id_match.group("from_point") != payload["from_point"]
+            or id_match.group("to_point") != payload["to_point"]
+        ):
+            raise ObstacleStoreError(
+                f"障碍记录 ID 与点位不一致: {source_name}"
+            )
+        if not isinstance(payload["distance_cm"], (int, float)) or isinstance(
+            payload["distance_cm"], bool
+        ):
+            raise ObstacleStoreError(f"障碍距离不符合契约: {source_name}")
+        if float(payload["distance_cm"]) <= 0:
+            raise ObstacleStoreError(f"障碍距离必须大于 0: {source_name}")
+
+        obstacle_type = payload["obstacle_type"]
+        detected_color = payload["detected_color"]
+        classification_status = payload["classification_status"]
+        station_id = payload["station_id"]
+        recognition_error = payload["recognition_error"]
+        if obstacle_type not in (OBSTACLE_TYPE_ORDINARY, OBSTACLE_TYPE_TOLL):
+            raise ObstacleStoreError(f"障碍类型不符合契约: {source_name}")
+        if detected_color not in ("red", "blue", None):
+            raise ObstacleStoreError(f"障碍颜色不符合契约: {source_name}")
+        if classification_status not in (CLASSIFICATION_SUCCESS, CLASSIFICATION_FAILED):
+            raise ObstacleStoreError(f"障碍分类状态不符合契约: {source_name}")
+
+        if classification_status == CLASSIFICATION_SUCCESS:
+            if recognition_error is not None:
+                raise ObstacleStoreError(f"成功分类不能包含识别错误: {source_name}")
+            if obstacle_type == OBSTACLE_TYPE_ORDINARY:
+                valid_classification = detected_color == "red" and station_id is None
+            else:
+                valid_classification = (
+                    detected_color == "blue"
+                    and isinstance(station_id, str)
+                    and QR_IDENTIFIER_PATTERN.fullmatch(station_id) is not None
+                )
+            if not valid_classification:
+                raise ObstacleStoreError(f"成功分类字段互相矛盾: {source_name}")
+        else:
+            if obstacle_type != OBSTACLE_TYPE_ORDINARY or station_id is not None:
+                raise ObstacleStoreError(f"失败分类必须采用普通障碍策略: {source_name}")
+            if recognition_error not in VALID_RECOGNITION_ERRORS:
+                raise ObstacleStoreError(f"失败分类识别错误不符合契约: {source_name}")
+
+        handling_result = payload["handling_result"]
+        recovery_status = payload["recovery_status"]
+        recovered_point = payload["recovered_point"]
+        if handling_result not in VALID_HANDLING_RESULTS:
+            raise ObstacleStoreError(f"障碍处理结果不符合契约: {source_name}")
+        if recovery_status not in VALID_RECOVERY_STATUSES:
+            raise ObstacleStoreError(f"障碍恢复状态不符合契约: {source_name}")
+        if handling_result == HANDLING_CONTINUED_CURRENT_EDGE:
+            valid_handling = (
+                obstacle_type == OBSTACLE_TYPE_TOLL
+                and recovery_status is None
+                and recovered_point is None
+            )
+        elif handling_result in (
+            HANDLING_BLOCKED_AND_REPLANNED,
+            HANDLING_CANCELED_AFTER_RECOVERY,
+        ):
+            valid_handling = (
+                recovery_status == RECOVERED
+                and recovered_point == payload["from_point"]
+            )
+        else:
+            valid_handling = recovery_status == RECOVERY_FAILED and recovered_point is None
+        if not valid_handling:
+            raise ObstacleStoreError(f"障碍处理与恢复字段互相矛盾: {source_name}")
+
+        filename = payload["image_filename"]
+        capture_error = payload["capture_error"]
+        if filename is not None:
+            if (
+                filename != f"{payload['id']}.jpg"
+                or capture_error is not None
+            ):
+                raise ObstacleStoreError(f"障碍照片字段不符合契约: {source_name}")
+        elif not isinstance(capture_error, str) or not capture_error:
+            raise ObstacleStoreError(f"缺失照片必须包含保存错误: {source_name}")
 
     def _to_response(self, payload) -> ObstacleRecordResponse:
         filename = payload["image_filename"]
@@ -174,8 +310,14 @@ class ObstacleStore:
             from_point=payload["from_point"],
             to_point=payload["to_point"],
             distance_cm=float(payload["distance_cm"]),
+            obstacle_type=payload["obstacle_type"],
+            detected_color=payload["detected_color"],
+            classification_status=payload["classification_status"],
+            station_id=payload["station_id"],
+            recognition_error=payload["recognition_error"],
+            handling_result=payload["handling_result"],
+            recovery_status=payload["recovery_status"],
             recovered_point=payload["recovered_point"],
-            status=payload["status"],
             image_url=image_url,
             capture_error=capture_error,
         )
