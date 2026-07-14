@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 QR_TYPE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_-]*$")
@@ -37,6 +37,20 @@ class QRCodePayload:
     qr_type: str
     identifier: str
     raw_text: str
+
+
+@dataclass(frozen=True)
+class QRCodeDecodeDiagnostics:
+    """One frame's QR decoding result and stage-level evidence.
+
+    Args:
+        texts: Unique non-empty texts decoded from the frame.
+        corners_detected: Whether OpenCV returned QR corner coordinates even
+            when it could not decode text.
+    """
+
+    texts: Tuple[str, ...]
+    corners_detected: bool
 
 
 def parse_qr_payload(raw_text: str) -> QRCodePayload:
@@ -116,22 +130,46 @@ class QRCodeRecognizer:
             Unique, non-empty decoded texts in detection order.
         """
 
+        # Keep the simple list contract used by tasks; the manual diagnostic
+        # tool calls decode_with_diagnostics() to distinguish detection from
+        # decoding failures without duplicating the OpenCV calls.
+        return list(self.decode_with_diagnostics(frame).texts)
+
+    def decode_with_diagnostics(self, frame) -> QRCodeDecodeDiagnostics:
+        """Decode one frame and retain whether QR corners were detected.
+
+        Args:
+            frame: OpenCV BGR or grayscale image.
+
+        Returns:
+            QRCodeDecodeDiagnostics containing decoded texts and the QR-corner
+            detection state needed by the manual field-test tool.
+        """
+
         if frame is None:
             raise ValueError("frame must not be None")
 
         # 1. Prefer the multi-code API when the installed OpenCV supports it.
         decoded_texts: List[str] = []
+        corners_detected = False
         decode_multi = getattr(self._detector, "detectAndDecodeMulti", None)
         if callable(decode_multi):
             result = decode_multi(frame)
+            if len(result) >= 3 and result[2] is not None and len(result[2]) > 0:
+                corners_detected = True
             if len(result) >= 2 and result[0]:
                 decoded_texts.extend(text for text in result[1] if text)
 
         # 2. Fall back to the widely supported single-code API.
         if not decoded_texts:
-            text, _points, _straight_code = self._detector.detectAndDecode(frame)
+            text, points, _straight_code = self._detector.detectAndDecode(frame)
+            if points is not None and len(points) > 0:
+                corners_detected = True
             if text:
                 decoded_texts.append(text)
 
         # 3. Avoid reporting the same decoded text twice from one frame.
-        return list(dict.fromkeys(decoded_texts))
+        return QRCodeDecodeDiagnostics(
+            texts=tuple(dict.fromkeys(decoded_texts)),
+            corners_detected=corners_detected,
+        )

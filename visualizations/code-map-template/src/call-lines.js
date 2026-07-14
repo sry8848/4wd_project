@@ -12,7 +12,8 @@ const TARGET_PORT_GAP = 6;
 const DEFAULT_DIRECTORY_GAP = 180;
 
 export function clearCallLines(svg, root = null) {
-  svg.querySelectorAll('[data-call-line]').forEach((path) => path.remove());
+  svg.querySelectorAll('[data-call-line], [data-call-arrow]')
+    .forEach((element) => element.remove());
   if (root) resetDynamicLayout(root);
 }
 
@@ -58,8 +59,9 @@ export function drawCallLines(svg, root, calls) {
   applyCorridorSpacing(root, preliminaryLayout.corridors);
 
   const finalLayout = layoutRoutes(measureRoutes(svg, root, calls));
-  const paths = finalLayout.routes.map((route) => buildCallPath(svg, route));
-  svg.append(...paths);
+  const callElements = finalLayout.routes
+    .flatMap((route) => buildCallElements(svg, route));
+  svg.append(...callElements);
 }
 
 function prepareTargetHeights(root, calls) {
@@ -259,7 +261,7 @@ function applyCorridorSpacing(root, corridors) {
   }
 }
 
-function buildCallPath(svg, route) {
+function buildCallElements(svg, route) {
   const sourceX = route.corridor.sourceSide === 'left'
     ? route.sourceRect.left
     : route.sourceRect.right;
@@ -287,7 +289,17 @@ function buildCallPath(svg, route) {
   const title = svg.ownerDocument.createElementNS(SVG_NAMESPACE, 'title');
   title.textContent = route.call.label;
   path.append(title);
-  return path;
+
+  const arrow = svg.ownerDocument.createElementNS(SVG_NAMESPACE, 'circle');
+  const arrowOffset = route.call.targetSide === 'left' ? -8 : 8;
+  arrow.setAttribute('class', 'call-arrow-hit');
+  arrow.setAttribute('cx', targetX + arrowOffset);
+  arrow.setAttribute('cy', route.targetY);
+  arrow.setAttribute('r', '10');
+  arrow.setAttribute('data-call-arrow', '');
+  arrow.setAttribute('data-source-method-id', route.call.sourceMethodId);
+  arrow.setAttribute('data-target-method-id', route.call.targetMethodId);
+  return [path, arrow];
 }
 
 function getLaneX(corridor, laneIndex) {

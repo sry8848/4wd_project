@@ -649,6 +649,12 @@ code {
   opacity: 0.16;
 }
 
+.call-arrow-hit {
+  fill: transparent;
+  pointer-events: all;
+  cursor: pointer;
+}
+
 .arrow-marker--normal { fill: #249660; }
 .arrow-marker--error { fill: #cf3d4e; }
 .arrow-marker--focus { fill: #176fd1; }

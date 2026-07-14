@@ -553,8 +553,8 @@ class EdgeFollower:
 
         Steps:
         Reuse forward_speed for low-speed departure, never normal 80/100 line
-        correction. After the minimum travel time, consecutive all-white readings
-        confirm that the node or acquired turn line is between the sensors.
+        correction. After the minimum travel time, consecutive non-node readings
+        confirm that the car has left the current node.
         """
         # Step 2: Protected leave. Node readings cannot mean "next node" here.
         if turn_left is None:
@@ -601,7 +601,7 @@ class EdgeFollower:
                 )
                 last_summary = summary
 
-            if not line_seen:
+            if not result.is_node:
                 clear_count += 1
             else:
                 clear_count = 0

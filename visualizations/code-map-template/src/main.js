@@ -280,17 +280,39 @@ function bindCallNavigation() {
       const target = findByData(codeTree, 'methodId', button.dataset.targetMethodId);
       if (!source || !target) return;
       navigationStack.push({
-        sourceMethodId: source.dataset.methodId,
-        targetMethodId: target.dataset.methodId,
-        targetWasOpen: target.open,
+        returnMethodId: source.dataset.methodId,
+        openedTargetMethodId: target.dataset.methodId,
+        openedTargetWasOpen: target.open,
       });
       target.open = true;
       requestRedraw();
-      requestAnimationFrame(() => {
-        centerMethod(target);
-        target.querySelector('summary').focus({ preventScroll: true });
-      });
+      focusMethod(target);
     });
+  });
+
+  callSvg.addEventListener('click', (event) => {
+    const clickedArrow = event.target.closest('[data-call-arrow]');
+    if (!clickedArrow) return;
+    const arrow = [...callSvg.querySelectorAll('[data-call-arrow]')]
+      .reduce((nearest, candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        const distance = Math.hypot(
+          event.clientX - (rect.left + rect.width / 2),
+          event.clientY - (rect.top + rect.height / 2),
+        );
+        return !nearest || distance < nearest.distance
+          ? { element: candidate, distance }
+          : nearest;
+      }, null).element;
+    const source = findByData(codeTree, 'methodId', arrow.dataset.sourceMethodId);
+    const target = findByData(codeTree, 'methodId', arrow.dataset.targetMethodId);
+    if (!source || !target) return;
+    navigationStack.push({
+      returnMethodId: target.dataset.methodId,
+      openedTargetMethodId: null,
+      openedTargetWasOpen: null,
+    });
+    focusMethod(source);
   });
 }
 
@@ -298,15 +320,21 @@ function handleJumpBack(event) {
   if (event.key !== 'Escape' || navigationStack.length === 0) return;
   event.preventDefault();
   const jump = navigationStack.pop();
-  const source = findByData(codeTree, 'methodId', jump.sourceMethodId);
-  const target = findByData(codeTree, 'methodId', jump.targetMethodId);
-  if (!source) return;
-  source.open = true;
-  if (target && !jump.targetWasOpen) target.open = false;
-  requestRedraw();
+  const returnMethod = findByData(codeTree, 'methodId', jump.returnMethodId);
+  if (!returnMethod) return;
+  if (jump.openedTargetMethodId) {
+    const openedTarget = findByData(codeTree, 'methodId', jump.openedTargetMethodId);
+    returnMethod.open = true;
+    if (openedTarget && !jump.openedTargetWasOpen) openedTarget.open = false;
+    requestRedraw();
+  }
+  focusMethod(returnMethod);
+}
+
+function focusMethod(method) {
   requestAnimationFrame(() => {
-    centerMethod(source);
-    source.querySelector('summary').focus({ preventScroll: true });
+    centerMethod(method);
+    method.querySelector('summary').focus({ preventScroll: true });
   });
 }
 
