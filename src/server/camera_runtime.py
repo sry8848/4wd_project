@@ -23,9 +23,13 @@ class BackendCamera:
     def __init__(
         self,
         device=0,
+        width=640,
+        height=480,
         session_factory: Callable[..., OpenCVCameraSession] = OpenCVCameraSession,
     ):
         self.device = device
+        self.width = width
+        self.height = height
         self._session_factory = session_factory
         self._session: Optional[OpenCVCameraSession] = None
         self._started = False
@@ -49,7 +53,11 @@ class BackendCamera:
         if self._started:
             raise RuntimeError("后端摄像头只能启动一次")
         self._started = True
-        session = self._session_factory(device_index=self.device)
+        session = self._session_factory(
+            device_index=self.device,
+            width=self.width,
+            height=self.height,
+        )
         try:
             session.open()
         except CameraCaptureError as exc:
@@ -85,6 +93,40 @@ class BackendCamera:
             LOGGER.error("Backend camera disabled after capture failure: %s", exc)
             raise
         return result.path
+
+    def read_frame(self):
+        """从唯一长期会话读取一张独立 BGR 帧。
+
+        分步逻辑：
+        1. 拒绝使用已经不可用的摄像头会话。
+        2. 读取独立帧，避免调用方修改摄像头内部缓冲区。
+        3. 读帧失败后关闭会话，本进程不自动重连。
+        """
+
+        if self._session is None:
+            raise CameraCaptureError(self.error or "后端摄像头不可用")
+        try:
+            return self._session.read_frame(copy=True)
+        except CameraCaptureError as exc:
+            self._session.close()
+            self._session = None
+            self.error = str(exc)
+            LOGGER.error("Backend camera disabled after frame read failure: %s", exc)
+            raise
+
+    def save_frame(self, output_path, frame) -> Path:
+        """保存调用方选中的准确帧，不重新读取摄像头。
+
+        参数说明：
+        output_path: 目标 JPEG 路径。
+        frame: 先前由 read_frame() 返回的 BGR 帧。
+
+        写盘失败不关闭摄像头，因为设备仍可能继续正常读帧。
+        """
+
+        if self._session is None:
+            raise CameraCaptureError(self.error or "后端摄像头不可用")
+        return self._session.save_diagnostic_frame(output_path, frame).path
 
     def close(self):
         """后端关闭时释放自己持有的摄像头资源。"""

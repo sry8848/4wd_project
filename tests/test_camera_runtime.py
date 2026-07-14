@@ -23,9 +23,56 @@ class BackendCameraTest(unittest.TestCase):
         self.assertTrue(camera.available)
         self.assertEqual(camera.capture("capture.jpg"), Path("capture.jpg"))
 
-        factory.assert_called_once_with(device_index=1)
+        factory.assert_called_once_with(device_index=1, width=640, height=480)
         session.open.assert_called_once_with()
         session.capture.assert_called_once_with("capture.jpg", warmup_frames=1)
+
+    def test_read_frame_reuses_session_and_returns_independent_frame(self):
+        frame = object()
+        session = Mock()
+        session.read_frame.return_value = frame
+        factory = Mock(return_value=session)
+        camera = BackendCamera(device="/dev/camera", session_factory=factory)
+        camera.start()
+
+        self.assertIs(camera.read_frame(), frame)
+        self.assertIs(camera.read_frame(), frame)
+
+        factory.assert_called_once_with(
+            device_index="/dev/camera",
+            width=640,
+            height=480,
+        )
+        session.open.assert_called_once_with()
+        self.assertEqual(session.read_frame.call_count, 2)
+        session.read_frame.assert_called_with(copy=True)
+
+    def test_read_failure_disables_camera_until_restart(self):
+        session = Mock()
+        session.read_frame.side_effect = CameraCaptureError("frame failed")
+        camera = BackendCamera(session_factory=Mock(return_value=session))
+        camera.start()
+
+        with self.assertRaisesRegex(CameraCaptureError, "frame failed"):
+            camera.read_frame()
+
+        self.assertFalse(camera.available)
+        self.assertEqual(camera.error, "frame failed")
+        session.close.assert_called_once_with()
+
+    def test_save_frame_does_not_reread_or_disable_camera_on_write_failure(self):
+        session = Mock()
+        session.save_diagnostic_frame.side_effect = CameraCaptureError("write failed")
+        camera = BackendCamera(session_factory=Mock(return_value=session))
+        camera.start()
+        frame = object()
+
+        with self.assertRaisesRegex(CameraCaptureError, "write failed"):
+            camera.save_frame("capture.jpg", frame)
+
+        self.assertTrue(camera.available)
+        session.save_diagnostic_frame.assert_called_once_with("capture.jpg", frame)
+        session.close.assert_not_called()
 
     def test_start_failure_does_not_raise_or_retry(self):
         session = Mock()
