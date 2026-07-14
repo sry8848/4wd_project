@@ -11,6 +11,7 @@ from src.algorithms.qr_detect import (
     QRCodePayload,
     parse_qr_payload,
 )
+from src.tasks.camera_servo_scan import CameraServoScanner
 
 
 @dataclass(frozen=True)
@@ -90,121 +91,41 @@ class QRCodeServoScanner:
             QRServoScanResult；成功时记录二维码内容和两个舵机角度。
         """
 
-        normalized_pan = self._validate_angles("pan_angles", pan_angles)
-        normalized_tilt = self._validate_angles("tilt_angles", tilt_angles)
-        if frames_per_position < 1 or frames_per_position > 100:
-            raise ValueError("frames_per_position 必须在 1 到 100 之间")
-        if discard_frames_after_move < 0 or discard_frames_after_move > 30:
-            raise ValueError("discard_frames_after_move 必须在 0 到 30 之间")
-        if timeout_seconds <= 0 or timeout_seconds > 120:
-            raise ValueError("timeout_seconds 必须大于 0 且不超过 120")
-
-        started_at = self._time()
-        deadline = started_at + timeout_seconds
-        positions_scanned = 0
-        frames_scanned = 0
         invalid_texts = []
-        last_frame = None
 
-        # 1. 外层改变上下视角，内层在当前高度从中心向左右扫描。
-        for tilt_angle in normalized_tilt:
-            if self._time() >= deadline:
-                break
-            self.tilt_servo.move_to(tilt_angle)
+        def decode_frame(scan_frame):
+            """Return the first valid project payload from one shared scan frame."""
 
-            for pan_angle in normalized_pan:
-                if self._time() >= deadline:
-                    break
-                self.pan_servo.move_to(pan_angle)
-                positions_scanned += 1
-                if progress_fn is not None:
-                    progress_fn(
-                        f"position={positions_scanned}, "
-                        f"pan={pan_angle:.1f}, tilt={tilt_angle:.1f}"
-                    )
+            for raw_text in self.recognizer.decode(scan_frame.frame):
+                try:
+                    return parse_qr_payload(raw_text)
+                except QRCodeFormatError:
+                    if raw_text not in invalid_texts:
+                        invalid_texts.append(raw_text)
+            return None
 
-                # 2. 丢弃舵机运动期间积压的帧，使用稳定后的最新画面。
-                if discard_frames_after_move:
-                    last_frame = self.camera.read_frame(
-                        warmup_frames=discard_frames_after_move - 1,
-                        copy=False,
-                    )
-
-                # 3. 在同一稳定位置读取多帧，降低单帧模糊导致的漏识别。
-                for _ in range(frames_per_position):
-                    if self._time() >= deadline:
-                        break
-                    frame = self.camera.read_frame(copy=False)
-                    last_frame = frame
-                    frames_scanned += 1
-                    for raw_text in self.recognizer.decode(frame):
-                        try:
-                            payload = parse_qr_payload(raw_text)
-                        except QRCodeFormatError:
-                            if raw_text not in invalid_texts:
-                                invalid_texts.append(raw_text)
-                            continue
-
-                        # 成功后不复位云台，让摄像头保持朝向二维码的位置。
-                        return self._build_result(
-                            payload=payload,
-                            pan_angle=pan_angle,
-                            tilt_angle=tilt_angle,
-                            positions_scanned=positions_scanned,
-                            frames_scanned=frames_scanned,
-                            invalid_texts=invalid_texts,
-                            started_at=started_at,
-                            last_frame=last_frame,
-                        )
-
-        return self._build_result(
-            payload=None,
-            pan_angle=None,
-            tilt_angle=None,
-            positions_scanned=positions_scanned,
-            frames_scanned=frames_scanned,
-            invalid_texts=invalid_texts,
-            started_at=started_at,
-            last_frame=last_frame,
+        shared_result = CameraServoScanner(
+            self.camera,
+            self.pan_servo,
+            self.tilt_servo,
+            time_fn=self._time,
+        ).scan(
+            decode_frame,
+            pan_angles=pan_angles,
+            tilt_angles=tilt_angles,
+            frames_per_position=frames_per_position,
+            discard_frames_after_move=discard_frames_after_move,
+            timeout_seconds=timeout_seconds,
+            progress_fn=progress_fn,
         )
-
-    def _build_result(
-        self,
-        *,
-        payload,
-        pan_angle,
-        tilt_angle,
-        positions_scanned,
-        frames_scanned,
-        invalid_texts,
-        started_at,
-        last_frame,
-    ) -> QRServoScanResult:
-        """将识别内容、角度和运行统计汇总为不可变结果。"""
-
+        payload = shared_result.value
         return QRServoScanResult(
             payload=payload,
-            pan_angle=pan_angle,
-            tilt_angle=tilt_angle,
-            positions_scanned=positions_scanned,
-            frames_scanned=frames_scanned,
+            pan_angle=shared_result.pan_angle if payload is not None else None,
+            tilt_angle=shared_result.tilt_angle if payload is not None else None,
+            positions_scanned=shared_result.positions_scanned,
+            frames_scanned=shared_result.frames_scanned,
             invalid_texts=tuple(invalid_texts),
-            elapsed_seconds=max(0.0, self._time() - started_at),
-            last_frame=last_frame,
+            elapsed_seconds=shared_result.elapsed_seconds,
+            last_frame=shared_result.last_frame,
         )
-
-    @staticmethod
-    def _validate_angles(name: str, angles: Sequence[float]) -> Tuple[float, ...]:
-        """校验角度列表并转换为浮点元组。
-
-        参数：
-            name: 用于错误信息的参数名。
-            angles: 待校验的舵机角度序列。
-        """
-
-        normalized = tuple(float(angle) for angle in angles)
-        if not normalized:
-            raise ValueError(f"{name} 至少需要一个角度")
-        if any(angle < 0 or angle > 180 for angle in normalized):
-            raise ValueError(f"{name} 中的角度必须在 0 到 180 之间")
-        return normalized

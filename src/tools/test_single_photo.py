@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import multiprocessing
 from pathlib import Path
 import sys
@@ -24,9 +25,16 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.hardware.camera import (
     CameraCaptureError,
+    OpenCVCameraSession,
     OpenCVCameraSettings,
     build_photo_path,
     capture_photo,
+)
+from src.hardware.servo import ServoError
+from src.tasks.camera_servo_scan import CameraServoScanner
+from src.tools.camera_servo_support import (
+    add_camera_servo_arguments,
+    enter_camera_servos,
 )
 
 
@@ -66,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         type=parse_devices,
         default=parse_devices("0,1"),
         help="要尝试的 OpenCV 摄像头编号，多个编号用逗号分隔，例如 0,1。",
+    )
+    parser.add_argument(
+        "--device-path",
+        type=Path,
+        help="舵机扫描时使用的稳定 V4L2 路径，例如 /dev/v4l/by-id/...。",
     )
     parser.add_argument(
         "--output",
@@ -126,6 +139,13 @@ def parse_args() -> argparse.Namespace:
         default=12.0,
         help="每个摄像头编号最多等待多久；小于等于 0 表示不启用超时保护。",
     )
+    parser.add_argument(
+        "--servo-scan-timeout",
+        type=float,
+        default=60.0,
+        help="转动摄像头并完成全部方向拍照的最长秒数。",
+    )
+    add_camera_servo_arguments(parser, default_frames_per_position=1)
     return parser.parse_args()
 
 
@@ -220,6 +240,99 @@ def _capture_worker(queue: multiprocessing.Queue, kwargs: dict) -> None:
         queue.put(("error", str(exc)))
 
 
+def _servo_photo_path(args, scan_frame) -> Path:
+    """生成包含扫描序号和舵机角度的唯一照片路径。
+
+    参数:
+        args: 已解析的照片输出参数。
+        scan_frame: 带有扫描位置和舵机角度的公共帧对象。
+    """
+
+    angle_suffix = (
+        f"{scan_frame.position_index:03d}_pan_{scan_frame.pan_angle:g}_"
+        f"tilt_{scan_frame.tilt_angle:g}"
+    )
+    if args.output is not None:
+        suffix = args.output.suffix or ".jpg"
+        return args.output.parent / f"{args.output.stem}_{angle_suffix}{suffix}"
+    return build_photo_path(
+        output_dir=args.output_dir,
+        prefix=f"servo_photo_{angle_suffix}",
+        extension=".jpg",
+    )
+
+
+def capture_servo_photo_scan(args: argparse.Namespace) -> int:
+    """转动摄像头，并在每个扫描方向保存一张照片。
+
+    参数:
+        args: 摄像头、照片输出和公共舵机扫描参数。
+
+    简单步骤:
+    1. 在同一个 ExitStack 中打开 USB 摄像头和两个舵机。
+    2. 每个位置读取设定数量的新画面，采用最后一帧。
+    3. 保存每个方向的照片并输出实际路径。
+    """
+
+    if args.backend not in ("auto", "opencv"):
+        raise ValueError("舵机扫描拍照只支持 OpenCV 摄像头后端")
+    if args.servo_scan_timeout <= 0:
+        raise ValueError("--servo-scan-timeout 必须大于 0")
+
+    selected_device = (
+        str(args.device_path) if args.device_path is not None else args.devices[0]
+    )
+    saved_photos = []
+
+    with ExitStack() as stack:
+        camera = stack.enter_context(
+            OpenCVCameraSession(
+                device_index=selected_device,
+                width=args.width,
+                height=args.height,
+                warmup_frames=args.warmup_frames,
+                warmup_seconds=args.warmup_seconds,
+                settings=build_camera_settings(args),
+            )
+        )
+        pan_servo, tilt_servo = enter_camera_servos(stack, args)
+
+        def save_position_photo(scan_frame):
+            if scan_frame.frame_index != args.frames_per_position:
+                return None
+            output_path = _servo_photo_path(args, scan_frame)
+            diagnostics = camera.save_diagnostic_frame(output_path, scan_frame.frame)
+            saved_photos.append(diagnostics)
+            print(
+                f"已保存位置 {scan_frame.position_index}: {diagnostics.path} "
+                f"({diagnostics.width}x{diagnostics.height}, "
+                f"pan={scan_frame.pan_angle:.1f}, tilt={scan_frame.tilt_angle:.1f})",
+                flush=True,
+            )
+            return None
+
+        result = CameraServoScanner(camera, pan_servo, tilt_servo).scan(
+            save_position_photo,
+            pan_angles=args.pan_angles,
+            tilt_angles=args.tilt_angles,
+            frames_per_position=args.frames_per_position,
+            discard_frames_after_move=args.discard_frames,
+            timeout_seconds=args.servo_scan_timeout,
+            progress_fn=lambda message: print(message, flush=True),
+        )
+
+    expected_count = len(args.pan_angles) * len(args.tilt_angles)
+    print(
+        f"舵机扫描拍照保存 {len(saved_photos)}/{expected_count} 张，"
+        f"耗时 {result.elapsed_seconds:.1f}s。",
+        flush=True,
+    )
+    if result.timed_out or len(saved_photos) != expected_count:
+        print("舵机扫描未能保存全部方向的照片。", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> int:
     """执行普通拍照测试流程。
 
@@ -230,6 +343,16 @@ def main() -> int:
     """
 
     args = parse_args()
+
+    if args.enable_servo_motion:
+        try:
+            return capture_servo_photo_scan(args)
+        except (CameraCaptureError, ServoError, ValueError) as exc:
+            print(f"舵机扫描拍照失败: {exc}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("\n用户取消舵机扫描拍照，硬件已释放。", file=sys.stderr)
+            return 130
 
     print("普通拍照测试开始。", flush=True)
     print(f"项目目录: {PROJECT_ROOT}", flush=True)

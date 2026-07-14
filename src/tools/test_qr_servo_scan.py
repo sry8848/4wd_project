@@ -6,45 +6,25 @@ import argparse
 from contextlib import ExitStack
 from pathlib import Path
 import sys
-from typing import Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src import config
 from src.algorithms.qr_detect import QRCodeRecognitionError, QRCodeRecognizer
 from src.hardware.camera import CameraCaptureError, OpenCVCameraSession
-from src.hardware.servo import ServoController, ServoError
+from src.hardware.servo import ServoError
 from src.tasks.qr_servo_scan import QRCodeServoScanner
+from src.tools.camera_servo_support import (
+    add_camera_servo_arguments,
+    enter_camera_servos,
+)
 from src.tools.qr_scan_diagnostics import (
     DEFAULT_QR_DIAGNOSTIC_DIR,
     format_qr_snapshot_diagnostics,
     save_qr_diagnostic_snapshot,
 )
-
-
-def parse_angle_list(value: str) -> Tuple[float, ...]:
-    """解析逗号分隔的安全测试角度。
-
-    参数：
-        value: 例如 ``90,70,110,50,130``。
-
-    返回：
-        保持输入顺序的浮点角度元组。
-    """
-
-    try:
-        angles = tuple(float(item.strip()) for item in value.split(",") if item.strip())
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("角度必须是数字") from exc
-    if not angles:
-        raise argparse.ArgumentTypeError("至少需要一个角度")
-    # 首次自动搜索保留机械余量，避免直接撞到 0/180 度极限。
-    if any(angle < 20 or angle > 160 for angle in angles):
-        raise argparse.ArgumentTypeError("自动搜索角度必须在 20 到 160 之间")
-    return angles
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,54 +45,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--width", type=int, default=640, help="请求图像宽度。")
     parser.add_argument("--height", type=int, default=480, help="请求图像高度。")
-    parser.add_argument(
-        "--pan-pin",
-        type=int,
-        default=config.CAMERA_PAN_SERVO_PIN,
-        help="左右舵机 BCM 引脚，已确认默认为 11/J2。",
-    )
-    parser.add_argument(
-        "--tilt-pin",
-        type=int,
-        default=config.CAMERA_TILT_SERVO_PIN,
-        help="上下舵机 BCM 引脚，已确认默认为 9/J3。",
-    )
-    parser.add_argument(
-        "--pan-angles",
-        type=parse_angle_list,
-        default=parse_angle_list("90,70,110,50,130"),
-        help="左右扫描角度，例如 90,70,110,50,130。",
-    )
-    parser.add_argument(
-        "--tilt-angles",
-        type=parse_angle_list,
-        default=parse_angle_list("90,75,105"),
-        help="上下扫描角度，例如 90,75,105。",
-    )
-    parser.add_argument(
-        "--frames-per-position",
-        type=int,
-        default=10,
-        help="每个云台位置连续识别的帧数。",
-    )
-    parser.add_argument(
-        "--discard-frames",
-        type=int,
-        default=3,
-        help="每次舵机移动后丢弃的摄像头缓冲帧数。",
-    )
     parser.add_argument("--timeout", type=float, default=30.0, help="最长搜索秒数。")
-    parser.add_argument(
-        "--servo-settle-seconds",
-        type=float,
-        default=0.4,
-        help="每次舵机动作后的稳定等待时间。",
-    )
-    parser.add_argument(
-        "--enable-servo-motion",
-        action="store_true",
-        help="明确允许两个摄像头舵机运动；缺少时拒绝启动。",
-    )
+    add_camera_servo_arguments(parser, default_frames_per_position=10)
     parser.add_argument(
         "--diagnostic-dir",
         type=Path,
@@ -169,10 +103,6 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    if args.pan_pin == args.tilt_pin:
-        print("左右和上下舵机不能使用同一个 BCM 引脚。", file=sys.stderr)
-        return 2
-
     selected_device = (
         str(args.device_path) if args.device_path is not None else args.device
     )
@@ -195,18 +125,7 @@ def main() -> int:
                     warmup_seconds=0.8,
                 )
             )
-            pan_servo = stack.enter_context(
-                ServoController(
-                    args.pan_pin,
-                    settle_seconds=args.servo_settle_seconds,
-                )
-            )
-            tilt_servo = stack.enter_context(
-                ServoController(
-                    args.tilt_pin,
-                    settle_seconds=args.servo_settle_seconds,
-                )
-            )
+            pan_servo, tilt_servo = enter_camera_servos(stack, args)
 
             scanner = QRCodeServoScanner(
                 camera,
