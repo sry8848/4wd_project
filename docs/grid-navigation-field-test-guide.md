@@ -17,7 +17,7 @@ C1 -- C2 -- C3 -- C4 -- C5
 以下参数是本轮准备验证的统一运行值；代码默认值、手动工具和网页实车模式必须保持一致：
 
 ```text
-forward-speed = 20
+forward-speed = 5
 line-turn-speed = 80
 line-left-turn-speed = 80
 line-right-turn-speed = 100
@@ -27,8 +27,19 @@ left-turn-rough-seconds = 0.4
 right-turn-rough-seconds = 0.3
 uturn-rough-seconds = 0.8（当前固定左旋）
 turn-acquire-timeout = 5.0
+leave-node-min-seconds = 0.10
+node-clear-samples = 1
+node-confirm-samples = 1
+node-center-speed = 20
+node-center-seconds = 0.10
+obstacle-confirm-samples = 2
+line-acquire-timeout = 3.0
+line-lost-timeout = 5.0
+reverse-speed = 5
+reverse-turn-speed = 20
 edge-timeout = 20
 recovery-timeout = 8
+delay = 0.02
 threshold = 20
 ```
 
@@ -112,7 +123,7 @@ python3 -m src.tools.test_grid_navigation \
   --rows 3 --cols 5 \
   --start A1 --end A2 \
   --heading east \
-  --forward-speed 20 \
+  --forward-speed 5 \
   --line-turn-speed 80 \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
@@ -122,8 +133,19 @@ python3 -m src.tools.test_grid_navigation \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
   --turn-acquire-timeout 5 \
+  --leave-node-min-seconds 0.10 \
+  --node-clear-samples 1 \
+  --node-confirm-samples 1 \
+  --node-center-speed 20 \
+  --node-center-seconds 0.10 \
+  --obstacle-confirm-samples 2 \
+  --line-acquire-timeout 3.0 \
+  --line-lost-timeout 5.0 \
+  --reverse-speed 5 \
+  --reverse-turn-speed 20 \
   --edge-timeout 20 \
-  --recovery-timeout 6 \
+  --recovery-timeout 8 \
+  --delay 0.02 \
   --no-ultrasonic \
   --line-debug
 ```
@@ -131,7 +153,7 @@ python3 -m src.tools.test_grid_navigation \
 `--line-debug` 每轮输出一行，例如：
 
 ```text
-line_debug LO=0 LI=1 RI=1 RO=0 node=0 action=forward motor=forward(20,20)
+line_debug LO=0 LI=1 RI=1 RO=0 node=0 action=forward motor=forward(5,5)
 line_debug LO=0 LI=1 RI=0 RO=0 node=0 action=left motor=left(0,80)
 line_debug LO=0 LI=0 RI=1 RO=0 node=0 action=right motor=right(100,0)
 line_debug LO=1 LI=1 RI=1 RO=0 node=1 action=node motor=brake()
@@ -167,7 +189,7 @@ dynamic blocked edges: 0
 | 输出 `action=right`，但车拉不回线      | 右修正力度不足                | 增大 `--line-right-turn-speed` 或降低直行速度 |
 | 很快出现 `node=1` 并停车在 A1 附近      | 起点节点离开逻辑或节点判断过早触发      | 起点摆正，观察离开节点期间四路读数                    |
 | 到 A2 十字口仍没有 `node=1`          | 节点读数不满足“内侧两路 + 至少一路外侧” | 用只读巡线命令检查十字口实际读数                     |
-| `motor=forward(20,20)` 时车明显跑弯 | 左右电机动力不一致              | 降低直行速度，后续可考虑左右直行速度分开                 |
+| `motor=forward(5,5)` 时车明显跑弯 | 左右电机动力不一致              | 检查左右电机、供电和机械阻力，不继续降低当前直行速度              |
 
 核心原则：先相信调试输出。调试输出里的读数错误，先查硬件和摆放；读数正确但动作错误，再查 `decide_line_action()`；动作正确但车身动作不对，再查电机方向和速度参数。
 
@@ -180,7 +202,7 @@ python3 -m src.tools.test_grid_navigation \
   --rows 3 --cols 5 \
   --start A1 --end C5 \
   --heading east \
-  --forward-speed 20 \
+  --forward-speed 5 \
   --line-turn-speed 80 \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
@@ -190,8 +212,19 @@ python3 -m src.tools.test_grid_navigation \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
   --turn-acquire-timeout 5 \
+  --leave-node-min-seconds 0.10 \
+  --node-clear-samples 1 \
+  --node-confirm-samples 1 \
+  --node-center-speed 20 \
+  --node-center-seconds 0.10 \
+  --obstacle-confirm-samples 2 \
+  --line-acquire-timeout 3.0 \
+  --line-lost-timeout 5.0 \
+  --reverse-speed 5 \
+  --reverse-turn-speed 20 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
+  --delay 0.02 \
   --no-ultrasonic \
   --line-debug
 ```
@@ -232,7 +265,7 @@ python3 -m src.tools.test_grid_navigation \
   --start A1 --end A2 \
   --heading east \
   --blocked-edge A1-A2 \
-  --forward-speed 20 \
+  --forward-speed 5 \
   --line-turn-speed 80 \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
@@ -242,8 +275,19 @@ python3 -m src.tools.test_grid_navigation \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
   --turn-acquire-timeout 5 \
+  --leave-node-min-seconds 0.10 \
+  --node-clear-samples 1 \
+  --node-confirm-samples 1 \
+  --node-center-speed 20 \
+  --node-center-seconds 0.10 \
+  --obstacle-confirm-samples 2 \
+  --line-acquire-timeout 3.0 \
+  --line-lost-timeout 5.0 \
+  --reverse-speed 5 \
+  --reverse-turn-speed 20 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
+  --delay 0.02 \
   --no-ultrasonic \
   --line-debug
 ```
@@ -261,7 +305,7 @@ python3 -m src.tools.test_grid_navigation \
   --rows 3 --cols 5 \
   --start A1 --end A2 \
   --heading east \
-  --forward-speed 20 \
+  --forward-speed 5 \
   --line-turn-speed 80 \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
@@ -271,8 +315,19 @@ python3 -m src.tools.test_grid_navigation \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
   --turn-acquire-timeout 5 \
+  --leave-node-min-seconds 0.10 \
+  --node-clear-samples 1 \
+  --node-confirm-samples 1 \
+  --node-center-speed 20 \
+  --node-center-seconds 0.10 \
+  --obstacle-confirm-samples 2 \
+  --line-acquire-timeout 3.0 \
+  --line-lost-timeout 5.0 \
+  --reverse-speed 5 \
+  --reverse-turn-speed 20 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
+  --delay 0.02 \
   --threshold 20 \
   --line-debug
 ```
@@ -295,7 +350,7 @@ python3 -m src.tools.test_grid_navigation \
   --rows 3 --cols 5 \
   --start A1 --end A2 \
   --heading east \
-  --forward-speed 20 \
+  --forward-speed 5 \
   --line-turn-speed 80 \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
@@ -305,10 +360,19 @@ python3 -m src.tools.test_grid_navigation \
   --right-turn-rough-seconds 0.3 \
   --uturn-rough-seconds 0.8 \
   --turn-acquire-timeout 5 \
-  --reverse-speed 15 \
+  --leave-node-min-seconds 0.10 \
+  --node-clear-samples 1 \
+  --node-confirm-samples 1 \
+  --node-center-speed 20 \
+  --node-center-seconds 0.10 \
+  --obstacle-confirm-samples 2 \
+  --line-acquire-timeout 3.0 \
+  --line-lost-timeout 5.0 \
+  --reverse-speed 5 \
   --reverse-turn-speed 20 \
   --edge-timeout 20 \
   --recovery-timeout 8 \
+  --delay 0.02 \
   --threshold 20 \
   --line-debug \
   --debug

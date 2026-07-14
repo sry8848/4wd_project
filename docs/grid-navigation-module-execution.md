@@ -509,7 +509,7 @@ canceled
 
 | 参数 | 当前值 | 使用位置 |
 | --- | ---: | --- |
-| `forward_speed` | `5` | 直行、出点和入点居中 |
+| `forward_speed` | `5` | 直行和出点 |
 | `line_left_turn_speed` | `80` | 走边左修正 |
 | `line_right_turn_speed` | `100` | 走边右修正 |
 | `search_speed` | `5` | 转向后的精细找线 |

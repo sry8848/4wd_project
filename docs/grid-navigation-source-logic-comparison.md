@@ -96,11 +96,13 @@ and (left_outer == black or right_outer == black)
 
 默认入口参数在 `src/tools/test_grid_navigation.py`：
 
-- `--forward-speed` 默认 20。
+- `--forward-speed` 默认 5。
 - `--line-turn-speed` 默认 80。
-- `--line-left-turn-speed` 默认不传；不传时使用 `--line-turn-speed`。
-- `--line-right-turn-speed` 默认不传；不传时使用 `--line-turn-speed`。
-- `--search-speed` 默认 8。
+- `--line-left-turn-speed` 默认 80。
+- `--line-right-turn-speed` 默认 100。
+- `--search-speed` 默认 5。
+- `--node-center-speed` 默认 20，`--node-center-seconds` 默认 0.10。
+- `--reverse-speed` 默认 5，`--reverse-turn-speed` 默认 20。
 - `--line-debug` 默认关闭；开启后每轮打印四路读数、节点判断、动作和电机命令。
 - 你实测时传过 `--forward-speed 15 --line-turn-speed 50 --search-speed 6`。
 
@@ -491,17 +493,29 @@ python3 -m src.tools.test_grid_navigation \
   --rows 3 --cols 5 \
   --start A1 --end A2 \
   --heading east \
-  --forward-speed 20 \
+  --forward-speed 5 \
   --line-turn-speed 80 \
   --line-left-turn-speed 80 \
   --line-right-turn-speed 100 \
   --search-speed 5 \
   --spin-speed 30 \
-  --left-turn-rough-seconds 0.6 \
-  --right-turn-rough-seconds 0.5 \
-  --uturn-rough-seconds 1.2 \
+  --left-turn-rough-seconds 0.4 \
+  --right-turn-rough-seconds 0.3 \
+  --uturn-rough-seconds 0.8 \
+  --turn-acquire-timeout 5.0 \
+  --leave-node-min-seconds 0.10 \
+  --node-clear-samples 1 \
+  --node-confirm-samples 1 \
+  --node-center-speed 20 \
+  --node-center-seconds 0.10 \
+  --obstacle-confirm-samples 2 \
+  --line-acquire-timeout 3.0 \
+  --line-lost-timeout 5.0 \
+  --reverse-speed 5 \
+  --reverse-turn-speed 20 \
   --edge-timeout 20 \
-  --recovery-timeout 6 \
+  --recovery-timeout 8 \
+  --delay 0.02 \
   --no-ultrasonic
 ```
 

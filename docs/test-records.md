@@ -16,7 +16,7 @@
 这些时间只与 `spin_speed = 30` 配套，改变速度、电池状态、轮胎或场地后
 必须重新校准，不能单独复制时间值。
 
-## 网格导航成功基线
+## 网格导航历史成功基线
 
 - 事实来源：用户确认此前当前小车使用本组参数导航无异常。
 - `forward_speed = 20`
@@ -29,4 +29,33 @@
 - `recovery_max_seconds = 8`
 - `ultrasonic_threshold_cm = 20`
 
-本组参数与上面的左右粗转时间共同构成当前小车唯一确认的网格导航基线。
+本组参数与上面的左右完整粗转时间是当时确认过的实车事实，作为历史对照保留，不代表当前网页运行参数。
+
+## 当前网页运行配置（待完整实车验收）
+
+- `forward_speed = 5`
+- `line_turn_speed = 80`
+- `line_left_turn_speed = 80`
+- `line_right_turn_speed = 100`
+- `search_speed = 5`
+- `spin_speed = 30`
+- `left_turn_rough_seconds = 0.4`
+- `right_turn_rough_seconds = 0.3`
+- `uturn_rough_seconds = 0.8`
+- `turn_acquire_timeout = 5.0`
+- `leave_node_min_seconds = 0.10`
+- `node_clear_samples = 1`
+- `node_confirm_samples = 1`
+- `node_center_speed = 20`
+- `node_center_seconds = 0.10`
+- `obstacle_confirm_samples = 2`
+- `line_acquire_timeout = 3.0`
+- `line_lost_timeout = 5.0`
+- `reverse_speed = 5`
+- `reverse_turn_speed = 20`
+- `edge_max_seconds = 20`
+- `recovery_max_seconds = 8`
+- `ultrasonic_threshold_cm = 20`
+- `delay_seconds = 0.02`
+
+这组数值与 `src/server/hardware_factory.py` 和 `src/tools/test_grid_navigation.py` 当前默认值一致。只有完成实车验收后，才能将“待验收”更新为“已通过”。

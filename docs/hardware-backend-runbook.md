@@ -150,19 +150,30 @@ curl http://127.0.0.1:8000/api/car/status
 手动工具和网页实车模式使用同一组默认值：
 
 ```text
-forward speed = 20
+forward speed = 5
 line turn speed = 80
 left correction = 80
 right correction = 100
 search speed = 5
 spin speed = 30
-90° left  = 0.6 秒
-90° right = 0.5 秒
-180° left = 1.2 秒
-180° right = 1.1 秒
+left pre-turn = 0.4 秒
+right pre-turn = 0.3 秒
+left U-turn pre-turn = 0.8 秒
+turn acquire timeout = 5.0 秒
+leave node minimum = 0.10 秒
+node clear samples = 1
+node confirm samples = 1
+node center speed = 20
+node center time = 0.10 秒
+obstacle confirm samples = 2
+line acquire timeout = 3.0 秒
+line lost timeout = 5.0 秒
+reverse speed = 5
+reverse correction speed = 20
 edge timeout = 20 秒
 recovery timeout = 8 秒
 ultrasonic threshold = 20 cm
+loop delay = 0.02 秒
 ```
 
-当前掉头实现固定左旋，因此运行时使用 `180° left = 1.2 秒`。完整事实记录见 `docs/test-records.md`。
+实车曾测得完整左转约 `0.6s`、右转约 `0.5s`、左掉头约 `1.2s`、右掉头约 `1.1s`；上表的 `0.4/0.3/0.8s` 是当前运行时的预转向时间，后续由传感器精细找线，两组数值不能混用。完整事实记录见 `docs/test-records.md`。
