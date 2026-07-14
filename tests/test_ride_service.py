@@ -1,10 +1,14 @@
 import unittest
+from threading import Thread
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from src.server.ride_service import RideService
 from src.server.runtime_state import RuntimeState
 from src.server.schemas import RideCreateRequest
+from src.tasks.face_verification import FACE_MATCHED, FaceVerificationResult
+from src.tasks.face_verification import FACE_TIMEOUT
 from src.tasks.grid_navigation import NAV_ARRIVED, NAV_CANCELED, NAV_NO_PATH
 
 
@@ -46,16 +50,153 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         self.mail_notifier = Mock()
         self.service = RideService(self.state, self.mail_notifier)
         self.obstacle_recorder = Mock()
+        self.face_verifier = Mock()
+        self.face_verifier.verify.return_value = FaceVerificationResult(
+            FACE_MATCHED,
+            "Alice",
+            0.1,
+            object(),
+        )
+        self.face_recorder = Mock()
+        self.face_recorder.record.return_value = SimpleNamespace(
+            id="face_20260714_100000_123456",
+            image_url="/api/face-verifications/face_20260714_100000_123456/image",
+            image_error=None,
+        )
 
     def submit(self, start="A1", waypoints=None, end="E5"):
         request = RideCreateRequest.from_payload(
             {
+                "passenger_id": "Alice",
                 "start": start,
                 "waypoints": waypoints or [],
                 "end": end,
             }
         )
         return self.service.submit_ride(request)
+
+    def run_ride(self, ride_id, navigator, *, auto_confirm=True):
+        """在线程中执行真实等待流程，并在需要时模拟前端确认上车。"""
+
+        outcome = {}
+
+        def target():
+            outcome["ride"] = self.service.run_hardware_ride(
+                ride_id,
+                navigator,
+                self.obstacle_recorder,
+                self.face_verifier,
+                self.face_recorder,
+            )
+
+        thread = Thread(target=target)
+        thread.start()
+        deadline = time.monotonic() + 2.0
+        confirmed = False
+        while thread.is_alive() and time.monotonic() < deadline:
+            ride = self.state.get_ride(ride_id)
+            if (
+                auto_confirm
+                and not confirmed
+                and ride.status == "awaiting_boarding_confirmation"
+            ):
+                self.service.confirm_boarding(ride_id)
+                confirmed = True
+            time.sleep(0.005)
+        thread.join(timeout=0.2)
+        self.assertFalse(thread.is_alive(), "行程测试线程未按预期结束")
+        return outcome["ride"]
+
+    def wait_for_status(self, ride_id, expected_status):
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            ride = self.state.get_ride(ride_id)
+            if ride.status == expected_status:
+                return ride
+            time.sleep(0.005)
+        self.fail(f"行程未进入状态 {expected_status}")
+
+    def start_ride_thread(self, ride_id, navigator):
+        outcome = {}
+
+        def target():
+            outcome["ride"] = self.service.run_hardware_ride(
+                ride_id,
+                navigator,
+                self.obstacle_recorder,
+                self.face_verifier,
+                self.face_recorder,
+            )
+
+        thread = Thread(target=target)
+        thread.start()
+        return thread, outcome
+
+    def test_pickup_does_not_start_next_segment_before_boarding_confirmation(self):
+        ride = self.submit(start="C3", end="C4")
+        navigator = FakeNavigator([[((2, 3), "east")]])
+        thread, outcome = self.start_ride_thread(ride.id, navigator)
+
+        waiting = self.wait_for_status(ride.id, "awaiting_boarding_confirmation")
+        self.assertEqual(waiting.current_position, "C3")
+        self.assertEqual(navigator.calls, [])
+        time.sleep(0.03)
+        self.assertEqual(navigator.calls, [])
+
+        self.service.confirm_boarding(ride.id)
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome["ride"].status, "arrived")
+        self.assertEqual(len(navigator.calls), 1)
+
+    def test_timeout_retries_same_ride_then_waits_for_confirmation(self):
+        ride = self.submit(start="C3", end="C4")
+        self.face_verifier.verify.side_effect = [
+            FaceVerificationResult(FACE_TIMEOUT, "Bob", 0.2, object()),
+            FaceVerificationResult(FACE_MATCHED, "Alice", 0.1, object()),
+        ]
+        navigator = FakeNavigator([[((2, 3), "east")]])
+        thread, outcome = self.start_ride_thread(ride.id, navigator)
+
+        self.wait_for_status(ride.id, "waiting_passenger_retry")
+        retrying = self.service.request_face_verification_retry(ride.id)
+        self.assertEqual(retrying.id, ride.id)
+        self.assertEqual(retrying.status, "verifying_passenger")
+        self.wait_for_status(ride.id, "awaiting_boarding_confirmation")
+        self.service.confirm_boarding(ride.id)
+
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome["ride"].status, "arrived")
+        self.assertEqual(self.face_verifier.verify.call_count, 2)
+
+    def test_cancel_while_waiting_at_pickup_finishes_without_navigation(self):
+        ride = self.submit(start="C3", end="C4")
+        self.face_verifier.verify.return_value = FaceVerificationResult(
+            FACE_TIMEOUT,
+            None,
+            None,
+            object(),
+        )
+        navigator = FakeNavigator([[((2, 3), "east")]])
+        thread, outcome = self.start_ride_thread(ride.id, navigator)
+
+        self.wait_for_status(ride.id, "waiting_passenger_retry")
+        canceled = self.service.request_cancel_ride(ride.id)
+
+        thread.join(timeout=1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(canceled.status, "canceled")
+        self.assertEqual(outcome["ride"].status, "canceled")
+        self.assertEqual(navigator.calls, [])
+
+    def test_retry_and_confirm_reject_wrong_states(self):
+        ride = self.submit()
+
+        with self.assertRaisesRegex(Exception, "不在等待重新识别"):
+            self.service.request_face_verification_retry(ride.id)
+        with self.assertRaisesRegex(Exception, "不在等待确认上车"):
+            self.service.confirm_boarding(ride.id)
 
     def test_hardware_ride_executes_each_stop_and_records_trusted_pose(self):
         ride = self.submit(waypoints=["C2"])
@@ -82,11 +223,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             ]
         )
 
-        finished = self.service.run_hardware_ride(
-            ride.id,
-            navigator,
-            self.obstacle_recorder,
-        )
+        finished = self.run_ride(ride.id, navigator)
 
         self.assertEqual(finished.status, "arrived")
         self.assertEqual(
@@ -147,11 +284,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             after_node_fn=cancel_once,
         )
 
-        finished = self.service.run_hardware_ride(
-            ride.id,
-            navigator,
-            self.obstacle_recorder,
-        )
+        finished = self.run_ride(ride.id, navigator)
 
         self.assertEqual(finished.status, "canceled")
         self.assertEqual(finished.progress, ["C3", "B3"])
@@ -171,11 +304,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
             [[((1, 2), "north"), ((0, 2), "north")]],
         )
 
-        finished = self.service.run_hardware_ride(
-            ride.id,
-            navigator,
-            self.obstacle_recorder,
-        )
+        finished = self.run_ride(ride.id, navigator)
 
         self.assertEqual(finished.status, "canceled")
         self.assertEqual(finished.progress, ["C3", "B3"])
@@ -187,11 +316,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         ride = self.submit()
         navigator = FakeNavigator([[]], results=[NAV_NO_PATH])
 
-        finished = self.service.run_hardware_ride(
-            ride.id,
-            navigator,
-            self.obstacle_recorder,
-        )
+        finished = self.run_ride(ride.id, navigator)
 
         self.assertEqual(finished.status, "failed")
         self.assertIn("无法规划到点位 A1", finished.error_message)
@@ -202,11 +327,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         ride = self.submit(start="C3", end="C4")
         navigator = FakeNavigator([[((2, 3), "east")]])
 
-        finished = self.service.run_hardware_ride(
-            ride.id,
-            navigator,
-            self.obstacle_recorder,
-        )
+        finished = self.run_ride(ride.id, navigator)
         result_callbacks = [
             call.args[2] for call in self.mail_notifier.notify.call_args_list
         ]
@@ -244,11 +365,7 @@ class RideServiceHardwareRideTest(unittest.TestCase):
                     )
                 return NAV_ARRIVED
 
-        finished = self.service.run_hardware_ride(
-            ride.id,
-            ObstacleNavigator([[], []]),
-            self.obstacle_recorder,
-        )
+        finished = self.run_ride(ride.id, ObstacleNavigator([[], []]))
 
         self.assertEqual(finished.status, "arrived")
         self.obstacle_recorder.record.assert_called_once_with(

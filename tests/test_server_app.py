@@ -10,6 +10,7 @@ os.environ.setdefault("CAR_INITIAL_POSITION", "C3")
 os.environ.setdefault("CAR_INITIAL_HEADING", "north")
 
 from src.server import app as server_app
+from src.server.point_codec import PointValidationError
 from src.server.runtime_state import RuntimeStateError
 
 
@@ -18,6 +19,9 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         server_app.app.state.navigation_hardware = None
         server_app.app.state.backend_camera = None
         server_app.app.state.obstacle_recorder = None
+        server_app.app.state.face_verifier = None
+        server_app.app.state.face_recorder = None
+        server_app.app.state.passenger_ids = ()
 
     def test_configuration_requires_explicit_real_car_pose(self):
         with self.assertRaises(RuntimeError):
@@ -127,8 +131,15 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         ride = SimpleNamespace(id="ride-hardware")
         hardware = SimpleNamespace(navigator=object(), motor=Mock())
         obstacle_recorder = object()
+        camera = SimpleNamespace(available=True)
+        face_verifier = object()
+        face_recorder = object()
         server_app.app.state.navigation_hardware = hardware
+        server_app.app.state.backend_camera = camera
         server_app.app.state.obstacle_recorder = obstacle_recorder
+        server_app.app.state.face_verifier = face_verifier
+        server_app.app.state.face_recorder = face_recorder
+        server_app.app.state.passenger_ids = ("Alice",)
         tasks = BackgroundTasks()
         with patch.object(
             server_app.ride_service,
@@ -139,7 +150,12 @@ class ServerAppNavigationModeTest(unittest.TestCase):
             "run_hardware_ride",
         ) as run_hardware:
             result = server_app.submit_ride(
-                {"start": "A1", "waypoints": [], "end": "A2"},
+                {
+                    "passenger_id": "Alice",
+                    "start": "A1",
+                    "waypoints": [],
+                    "end": "A2",
+                },
                 tasks,
             )
 
@@ -147,7 +163,13 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         self.assertIs(tasks.tasks[0].func, run_hardware)
         self.assertEqual(
             tasks.tasks[0].args,
-            (ride.id, hardware.navigator, obstacle_recorder),
+            (
+                ride.id,
+                hardware.navigator,
+                obstacle_recorder,
+                face_verifier,
+                face_recorder,
+            ),
         )
 
     def test_hardware_submit_fails_before_creating_ride_when_not_ready(self):
@@ -158,7 +180,12 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         ) as submit:
             with self.assertRaises(RuntimeStateError) as context:
                 server_app.submit_ride(
-                    {"start": "A1", "waypoints": [], "end": "A2"},
+                    {
+                        "passenger_id": "Alice",
+                        "start": "A1",
+                        "waypoints": [],
+                        "end": "A2",
+                    },
                     tasks,
                 )
 
@@ -178,6 +205,92 @@ class ServerAppNavigationModeTest(unittest.TestCase):
         self.assertTrue(health["hardware_ready"])
         self.assertFalse(health["camera_ready"])
         self.assertEqual(health["camera_error"], "cannot open camera")
+
+    def test_passenger_list_returns_only_loaded_labels(self):
+        server_app.app.state.passenger_ids = ("Alice", "张三")
+
+        self.assertEqual(server_app.list_passengers(), ["Alice", "张三"])
+
+    def test_submit_rejects_unknown_passenger_before_creating_ride(self):
+        server_app.app.state.navigation_hardware = SimpleNamespace(navigator=object())
+        server_app.app.state.obstacle_recorder = object()
+        server_app.app.state.backend_camera = SimpleNamespace(available=True)
+        server_app.app.state.face_verifier = object()
+        server_app.app.state.face_recorder = object()
+        server_app.app.state.passenger_ids = ("Alice",)
+
+        with patch.object(server_app.ride_service, "submit_ride") as submit:
+            with self.assertRaisesRegex(PointValidationError, "不在当前已加载"):
+                server_app.submit_ride(
+                    {
+                        "passenger_id": "Bob",
+                        "start": "A1",
+                        "waypoints": [],
+                        "end": "A2",
+                    },
+                    BackgroundTasks(),
+                )
+
+        submit.assert_not_called()
+
+    def test_submit_rejects_unavailable_camera_before_creating_ride(self):
+        server_app.app.state.navigation_hardware = SimpleNamespace(navigator=object())
+        server_app.app.state.obstacle_recorder = object()
+        server_app.app.state.backend_camera = SimpleNamespace(available=False)
+        server_app.app.state.passenger_ids = ("Alice",)
+
+        with patch.object(server_app.ride_service, "submit_ride") as submit:
+            with self.assertRaises(RuntimeStateError) as context:
+                server_app.submit_ride(
+                    {
+                        "passenger_id": "Alice",
+                        "start": "A1",
+                        "waypoints": [],
+                        "end": "A2",
+                    },
+                    BackgroundTasks(),
+                )
+
+        self.assertEqual(context.exception.code, "camera_not_ready")
+        submit.assert_not_called()
+
+    def test_retry_and_confirm_endpoints_reject_bodies_and_delegate(self):
+        retry_ride = SimpleNamespace(id="ride-1")
+        confirm_ride = SimpleNamespace(id="ride-1")
+        with patch.object(
+            server_app.ride_service,
+            "request_face_verification_retry",
+            return_value=retry_ride,
+        ) as retry, patch.object(
+            server_app.ride_service,
+            "confirm_boarding",
+            return_value=confirm_ride,
+        ) as confirm:
+            self.assertIs(
+                server_app.retry_face_verification("ride-1", payload=None),
+                retry_ride,
+            )
+            self.assertIs(
+                server_app.confirm_boarding("ride-1", payload=None),
+                confirm_ride,
+            )
+            with self.assertRaises(PointValidationError):
+                server_app.retry_face_verification("ride-1", payload={})
+            with self.assertRaises(PointValidationError):
+                server_app.confirm_boarding("ride-1", payload={})
+
+        retry.assert_called_once_with("ride-1")
+        confirm.assert_called_once_with("ride-1")
+
+    def test_face_image_rejects_invalid_record_id_before_store_access(self):
+        with patch.object(
+            server_app.face_verification_store,
+            "get_image_path",
+        ) as get_image_path:
+            with self.assertRaises(PointValidationError):
+                server_app.get_face_verification_image("../secret")
+
+        get_image_path.assert_not_called()
 
     def test_obstacle_list_uses_persistent_store(self):
         records = [SimpleNamespace(id="obstacle-1")]

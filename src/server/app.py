@@ -24,7 +24,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.algorithms.astar import PASSABLE
+from src.algorithms.face_recognition import (
+    FaceRecognitionError,
+    HaarFaceDetector,
+    LocalFaceRecognizer,
+)
 from src.server.camera_runtime import BackendCamera, parse_camera_device
+from src.server.face_verification_store import (
+    FACE_RECORD_ID_RE,
+    FaceVerificationRecorder,
+    FaceVerificationStore,
+    FaceVerificationStoreError,
+)
 from src.server.hardware_factory import create_grid_navigation_hardware
 from src.server.obstacle_recorder import ObstacleRecorder
 from src.server.obstacle_store import ObstacleStore, ObstacleStoreError
@@ -40,6 +51,7 @@ from src.server.schemas import (
     RideCreateRequest,
     RideStatusResponse,
 )
+from src.tasks.face_verification import FaceVerificationTask
 
 
 LOGGER = logging.getLogger(__name__)
@@ -47,6 +59,10 @@ NAVIGATION_MODE_HARDWARE = "hardware"
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 OBSTACLE_CAPTURE_DIR = (
     Path(__file__).resolve().parents[2] / "captures" / "obstacles"
+)
+FACE_DATASET_DIR = Path(__file__).resolve().parents[2] / "captures" / "faces"
+FACE_VERIFICATION_DIR = (
+    Path(__file__).resolve().parents[2] / "captures" / "face_verifications"
 )
 from src.services.mail_sender import (
     AsyncMailNotifier,
@@ -95,6 +111,7 @@ runtime_state = RuntimeState(
 mail_notifier = create_mail_notifier(os.environ)
 ride_service = RideService(runtime_state, mail_notifier)
 obstacle_store = ObstacleStore(OBSTACLE_CAPTURE_DIR)
+face_verification_store = FaceVerificationStore(FACE_VERIFICATION_DIR)
 
 
 @asynccontextmanager
@@ -118,9 +135,30 @@ async def lifespan(app_instance: FastAPI):
     camera = BackendCamera(device=parse_camera_device(os.environ))
     camera.start()
     obstacle_recorder = ObstacleRecorder(obstacle_store, camera)
+    face_verifier = None
+    face_recorder = None
+    passenger_ids = ()
+    try:
+        detector = HaarFaceDetector()
+        recognizer = LocalFaceRecognizer(detector=detector, threshold=0.30)
+        recognizer.load_dataset(FACE_DATASET_DIR)
+        passenger_ids = recognizer.labels
+        if camera.available:
+            face_verifier = FaceVerificationTask(
+                recognizer,
+                camera,
+                confirm_frames=3,
+                timeout_seconds=20.0,
+            )
+            face_recorder = FaceVerificationRecorder(face_verification_store, camera)
+    except FaceRecognitionError as exc:
+        LOGGER.warning("Face recognition unavailable at startup: %s", exc)
     app_instance.state.navigation_hardware = hardware
     app_instance.state.backend_camera = camera
     app_instance.state.obstacle_recorder = obstacle_recorder
+    app_instance.state.face_verifier = face_verifier
+    app_instance.state.face_recorder = face_recorder
+    app_instance.state.passenger_ids = passenger_ids
 
     try:
         yield
@@ -141,12 +179,18 @@ async def lifespan(app_instance: FastAPI):
                         app_instance.state.navigation_hardware = None
                         app_instance.state.backend_camera = None
                         app_instance.state.obstacle_recorder = None
+                        app_instance.state.face_verifier = None
+                        app_instance.state.face_recorder = None
+                        app_instance.state.passenger_ids = ()
 
 
-app = FastAPI(title="4WD Car Backend", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="4WD Car Backend", version="0.3.0", lifespan=lifespan)
 app.state.navigation_hardware = None
 app.state.backend_camera = None
 app.state.obstacle_recorder = None
+app.state.face_verifier = None
+app.state.face_recorder = None
+app.state.passenger_ids = ()
 
 
 @app.exception_handler(PointValidationError)
@@ -220,8 +264,21 @@ async def handle_runtime_state_error(
         http_status = status.HTTP_404_NOT_FOUND
         code = exc.code
         message = exc.message
-    elif exc.code in ("ride_already_running", "ride_not_active"):
+    elif exc.code in (
+        "ride_already_running",
+        "ride_not_active",
+        "invalid_ride_operation",
+        "ride_command_pending",
+    ):
         http_status = status.HTTP_409_CONFLICT
+        code = exc.code
+        message = exc.message
+    elif exc.code in (
+        "hardware_not_ready",
+        "camera_not_ready",
+        "face_recognition_not_ready",
+    ):
+        http_status = status.HTTP_503_SERVICE_UNAVAILABLE
         code = exc.code
         message = exc.message
     else:
@@ -302,6 +359,13 @@ def get_car_status():
     return runtime_state.get_car_status()
 
 
+@app.get("/api/passengers", response_model=List[str])
+def list_passengers():
+    """返回后端启动时成功加载的固定人脸标签。"""
+
+    return list(app.state.passenger_ids)
+
+
 @app.post(
     "/api/rides",
     response_model=RideStatusResponse,
@@ -311,7 +375,7 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
     """创建行程并注册真实硬件后台导航。
 
     参数说明：
-    payload: 前端 JSON 请求体，只允许 start、waypoints、end。
+    payload: 前端 JSON 请求体，只允许 passenger_id、start、waypoints、end。
     background_tasks: FastAPI 为本次请求提供的后台任务容器。
 
     分步逻辑：
@@ -328,12 +392,34 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
             "真实导航硬件尚未初始化",
         )
 
+    camera = app.state.backend_camera
+    if camera is None or not camera.available:
+        raise RuntimeStateError(
+            "camera_not_ready",
+            "固定摄像头不可用，不能创建接客行程",
+        )
+    face_verifier = app.state.face_verifier
+    face_recorder = app.state.face_recorder
+    if face_verifier is None or face_recorder is None:
+        raise RuntimeStateError(
+            "face_recognition_not_ready",
+            "人脸识别器没有可用登记样本，请先登记并重启后端",
+        )
+    if request.passenger_id not in app.state.passenger_ids:
+        raise PointValidationError(
+            "unknown_passenger",
+            "所选乘客不在当前已加载的人脸列表中",
+            "passenger_id",
+        )
+
     ride = ride_service.submit_ride(request)
     background_tasks.add_task(
         ride_service.run_hardware_ride,
         ride.id,
         hardware.navigator,
         obstacle_recorder,
+        face_verifier,
+        face_recorder,
     )
     return ride
 
@@ -406,6 +492,42 @@ def cancel_ride(
     }
 
 
+@app.post(
+    "/api/rides/{ride_id}/face-verification/retry",
+    response_model=RideStatusResponse,
+)
+def retry_face_verification(
+    ride_id: str,
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+):
+    """唤醒同一活动行程线程重新执行一次人脸核验。"""
+
+    if payload is not None:
+        raise PointValidationError(
+            "invalid_request",
+            "重新识别接口不接受请求体",
+        )
+    return ride_service.request_face_verification_retry(ride_id)
+
+
+@app.post(
+    "/api/rides/{ride_id}/confirm-boarding",
+    response_model=RideStatusResponse,
+)
+def confirm_boarding(
+    ride_id: str,
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+):
+    """确认乘客上车并允许原行程线程继续导航。"""
+
+    if payload is not None:
+        raise PointValidationError(
+            "invalid_request",
+            "确认上车接口不接受请求体",
+        )
+    return ride_service.confirm_boarding(ride_id)
+
+
 @app.get("/api/rides/{ride_id}/events")
 def list_ride_events(
     ride_id: str,
@@ -459,6 +581,32 @@ def get_obstacle_image(record_id: str):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="障碍照片不存在",
+        ) from exc
+    return FileResponse(image_path, media_type="image/jpeg")
+
+
+@app.get("/api/face-verifications/{record_id}/image")
+def get_face_verification_image(record_id: str):
+    """只返回合法人脸核验 JSON 已登记且真实存在的 JPEG。"""
+
+    if not FACE_RECORD_ID_RE.fullmatch(record_id):
+        raise PointValidationError(
+            "invalid_face_record_id",
+            "人脸核验记录 ID 不符合契约",
+            "record_id",
+        )
+    try:
+        image_path = face_verification_store.get_image_path(record_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="人脸核验照片不存在",
+        ) from exc
+    except FaceVerificationStoreError as exc:
+        LOGGER.exception("Invalid face verification record: %s", record_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="人脸核验记录损坏",
         ) from exc
     return FileResponse(image_path, media_type="image/jpeg")
 

@@ -7,19 +7,26 @@ orchestrates an injected GridNavigator and records trusted-node progress.
 from __future__ import annotations
 
 import logging
-from threading import RLock
+from threading import Condition, RLock
 from typing import List
 
+from src.server.face_verification_store import FaceVerificationStoreError
 from src.server.point_codec import coord_to_point, point_to_coord
 from src.server.runtime_state import (
     RIDE_STATUS_ARRIVED,
+    RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION,
     RIDE_STATUS_CANCELING,
     RIDE_STATUS_CANCELED,
     RIDE_STATUS_FAILED,
+    RIDE_STATUS_IN_TRIP,
+    RIDE_STATUS_TO_PICKUP,
+    RIDE_STATUS_VERIFYING_PASSENGER,
+    RIDE_STATUS_WAITING_PASSENGER_RETRY,
     RuntimeState,
     RuntimeStateError,
 )
 from src.server.schemas import RideCreateRequest, RideStatusResponse
+from src.tasks.face_verification import FACE_CANCELED, FACE_MATCHED, FACE_TIMEOUT
 from src.tasks.grid_navigation import (
     NAV_ARRIVED,
     NAV_CANCELED,
@@ -28,9 +35,13 @@ from src.tasks.grid_navigation import (
 )
 
 
-RIDE_STATUS_TO_PICKUP = "to_pickup"
-RIDE_STATUS_ARRIVED_PICKUP = "arrived_pickup"
-RIDE_STATUS_IN_TRIP = "in_trip"
+COMMAND_RETRY_FACE = "retry_face"
+COMMAND_CONFIRM_BOARDING = "confirm_boarding"
+STATIONARY_PICKUP_STATUSES = (
+    RIDE_STATUS_VERIFYING_PASSENGER,
+    RIDE_STATUS_WAITING_PASSENGER_RETRY,
+    RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +62,9 @@ class RideService:
         self.state = state
         self.mail_notifier = mail_notifier
         self._state_lock = RLock()
+        self._command_condition = Condition(self._state_lock)
         self._cancel_reasons = {}
+        self._pending_commands = {}
 
     def submit_ride(self, request: RideCreateRequest) -> RideStatusResponse:
         """创建真实硬件行程并生成前端展示路线。
@@ -74,7 +87,7 @@ class RideService:
             ride.id,
             route=route,
             progress=[car_status.current_position],
-            eta_text="派单中",
+            eta_text="正在前往起点",
         )
         self.state.append_ride_event(
             ride.id,
@@ -83,13 +96,22 @@ class RideService:
         )
         return self.state.get_ride(ride.id)
 
-    def run_hardware_ride(self, ride_id: str, navigator, obstacle_recorder):
+    def run_hardware_ride(
+        self,
+        ride_id: str,
+        navigator,
+        obstacle_recorder,
+        face_verifier,
+        face_recorder,
+    ):
         """使用已创建的 GridNavigator 执行真实分段行程。
 
         参数说明：
         ride_id: submit_ride() 返回的活动行程 ID。
         navigator: hardware_factory 创建的 GridNavigator；本方法不拥有或关闭它。
         obstacle_recorder: 后端长期摄像头与 ObstacleStore 的业务组合对象。
+        face_verifier: 使用后端唯一摄像头的指定乘客核验任务。
+        face_recorder: 保存每次成功或超时结果的记录器。
 
         分步逻辑：
         1. 按当前位置、起点、途径点、终点逐段调用真实导航。
@@ -104,11 +126,13 @@ class RideService:
             stops = [ride.start, *ride.waypoints, ride.end]
             pickup_arrived = ride.current_position == ride.start
             if pickup_arrived:
-                self._mark_pickup_arrived(
+                may_continue = self._verify_and_wait_for_boarding(
                     ride_id,
-                    ride.start,
-                    list(ride.progress),
+                    face_verifier,
+                    face_recorder,
                 )
+                if not may_continue:
+                    return self.state.get_ride(ride_id)
 
             for stop_index, stop in enumerate(stops):
                 if not self._is_active_ride(ride_id):
@@ -136,8 +160,7 @@ class RideService:
                         else:
                             status = (
                                 RIDE_STATUS_IN_TRIP
-                                if current_ride.status
-                                in (RIDE_STATUS_ARRIVED_PICKUP, RIDE_STATUS_IN_TRIP)
+                                if current_ride.status == RIDE_STATUS_IN_TRIP
                                 else RIDE_STATUS_TO_PICKUP
                             )
                             message = f"当前位置 {point}"
@@ -228,24 +251,20 @@ class RideService:
                         raise RuntimeError(f"未知导航结果: {result}")
 
                     current_ride = self.state.get_ride(ride_id)
-                    if stop_index == 0:
-                        self._mark_pickup_arrived(
-                            ride_id,
-                            ride.start,
-                            list(current_ride.progress),
-                        )
-                    elif stop == ride.end:
-                        return self._finish_arrived(
-                            ride_id,
-                            ride.end,
-                            list(current_ride.progress),
-                        )
-                    else:
-                        self._mark_waypoint_arrived(
-                            ride_id,
-                            stop,
-                            list(current_ride.progress),
-                        )
+                    progress = list(current_ride.progress)
+
+                if stop_index == 0:
+                    may_continue = self._verify_and_wait_for_boarding(
+                        ride_id,
+                        face_verifier,
+                        face_recorder,
+                    )
+                    if not may_continue:
+                        return self.state.get_ride(ride_id)
+                elif stop == ride.end:
+                    return self._finish_arrived(ride_id, ride.end, progress)
+                else:
+                    self._mark_waypoint_arrived(ride_id, stop, progress)
 
             return self.state.get_ride(ride_id)
         except Exception as exc:
@@ -266,7 +285,7 @@ class RideService:
         2. 保持行程活动，将状态标记为 canceling。
         3. 当前边继续执行，由 GridNavigator 到达前方节点后完成取消。
         """
-        with self._state_lock:
+        with self._command_condition:
             active_ride = self.state.get_active_ride()
             if active_ride is None or active_ride.id != ride_id:
                 raise RuntimeStateError(
@@ -278,6 +297,19 @@ class RideService:
             if ride_id in self._cancel_reasons:
                 return active_ride
 
+            if active_ride.status in STATIONARY_PICKUP_STATUSES:
+                self._pending_commands.pop(ride_id, None)
+                canceled = self.state.finish_ride(
+                    ride_id,
+                    status=RIDE_STATUS_CANCELED,
+                    current_position=active_ride.current_position,
+                    eta_text="行程已取消，小车保持在起点停车",
+                    error_message=reason,
+                )
+                self.state.append_ride_event(ride_id, "system", canceled.eta_text)
+                self._command_condition.notify_all()
+                return canceled
+
             self._cancel_reasons[ride_id] = reason
             message = "取消请求已收到，小车将在前方下一个节点停车"
             ride = self.state.update_ride(
@@ -288,6 +320,58 @@ class RideService:
             self.state.append_ride_event(ride_id, "system", message)
             return ride
 
+    def request_face_verification_retry(self, ride_id: str):
+        """在同一活动行程中提交一次人脸重新识别命令。"""
+
+        with self._command_condition:
+            ride = self._require_active_status(
+                ride_id,
+                RIDE_STATUS_WAITING_PASSENGER_RETRY,
+                "当前行程不在等待重新识别状态",
+            )
+            if ride_id in self._pending_commands:
+                raise RuntimeStateError(
+                    "ride_command_pending",
+                    "当前行程已有待处理命令",
+                    "ride_id",
+                )
+            self._pending_commands[ride_id] = COMMAND_RETRY_FACE
+            message = "已请求重新识别乘客"
+            updated = self.state.update_ride(
+                ride_id,
+                status=RIDE_STATUS_VERIFYING_PASSENGER,
+                eta_text=message,
+            )
+            self.state.append_ride_event(ride_id, "passenger", message)
+            self._command_condition.notify_all()
+            return updated
+
+    def confirm_boarding(self, ride_id: str):
+        """确认指定乘客已上车并唤醒原行程线程。"""
+
+        with self._command_condition:
+            self._require_active_status(
+                ride_id,
+                RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION,
+                "当前行程不在等待确认上车状态",
+            )
+            if ride_id in self._pending_commands:
+                raise RuntimeStateError(
+                    "ride_command_pending",
+                    "当前行程已有待处理命令",
+                    "ride_id",
+                )
+            self._pending_commands[ride_id] = COMMAND_CONFIRM_BOARDING
+            message = "已确认上车，即将继续行程"
+            updated = self.state.update_ride(
+                ride_id,
+                status=RIDE_STATUS_IN_TRIP,
+                eta_text=message,
+            )
+            self.state.append_ride_event(ride_id, "passenger", message)
+            self._command_condition.notify_all()
+            return updated
+
     def force_cancel_ride(self, ride_id: str, reason: str = "server_shutdown"):
         """在服务关闭等场景立即终止行程，不等待下一个节点。
 
@@ -296,8 +380,9 @@ class RideService:
         reason: 强制终止原因，仅用于错误说明。
         """
 
-        with self._state_lock:
+        with self._command_condition:
             self._cancel_reasons.pop(ride_id, None)
+            self._pending_commands.pop(ride_id, None)
             ride = self.state.get_ride(ride_id)
             canceled = self.state.finish_ride(
                 ride_id,
@@ -307,6 +392,7 @@ class RideService:
                 error_message=reason,
             )
             self.state.append_ride_event(ride_id, "system", canceled.eta_text)
+            self._command_condition.notify_all()
             return canceled
 
     def _finish_canceled_at_node(self, ride_id: str):
@@ -330,38 +416,124 @@ class RideService:
             self.state.append_ride_event(ride_id, "system", message)
             return canceled
 
-    def _mark_pickup_arrived(self, ride_id: str, pickup: str, progress: List[str]):
+    def _verify_and_wait_for_boarding(self, ride_id, face_verifier, face_recorder):
+        """在起点停车后反复验脸，并等待确认上车或取消。"""
+
         with self._state_lock:
-            pickup_message = f"已到达起点 {pickup}，请上车"
-            is_canceling = self._is_cancel_requested(ride_id)
-            status = (
-                RIDE_STATUS_CANCELING
-                if is_canceling
-                else RIDE_STATUS_ARRIVED_PICKUP
-            )
-            message = (
-                "取消请求已收到，小车将在前方下一个节点停车"
-                if is_canceling
-                else pickup_message
-            )
+            if self._is_cancel_requested(ride_id):
+                self._finish_canceled_at_node(ride_id)
+                return False
+            if not self._is_active_ride(ride_id):
+                return False
+            ride = self.state.get_ride(ride_id)
             event = self.state.append_ride_event(
                 ride_id,
                 "car",
-                pickup_message,
+                f"已到达起点 {ride.start}，正在核验乘客 {ride.passenger_id}",
             )
-            self.state.update_ride(
-                ride_id,
-                status=status,
-                current_position=pickup,
-                progress=progress,
-                eta_text=message,
+        self._queue_point_mail(ride_id, "起点", ride.start, event.created_at)
+
+        while True:
+            with self._state_lock:
+                if not self._is_active_ride(ride_id):
+                    return False
+                message = f"正在识别乘客 {ride.passenger_id}"
+                self.state.update_ride(
+                    ride_id,
+                    status=RIDE_STATUS_VERIFYING_PASSENGER,
+                    current_position=ride.start,
+                    eta_text=message,
+                )
+                self.state.append_ride_event(ride_id, "car", message)
+            result = face_verifier.verify(
+                ride.passenger_id,
+                cancel_requested_fn=lambda: not self._is_active_ride(ride_id),
             )
-            self._queue_point_mail(
-                ride_id,
-                "起点",
-                pickup,
-                event.created_at,
+            if result.outcome == FACE_CANCELED or not self._is_active_ride(ride_id):
+                return False
+
+            record = None
+            record_error = None
+            try:
+                record = face_recorder.record(
+                    ride_id=ride_id,
+                    passenger_id=ride.passenger_id,
+                    verification_result=result,
+                )
+            except FaceVerificationStoreError as exc:
+                LOGGER.exception("Failed to persist face verification for ride=%s", ride_id)
+                record_error = str(exc)
+
+            with self._state_lock:
+                if not self._is_active_ride(ride_id):
+                    return False
+                record_id = record.id if record is not None else None
+                image_url = record.image_url if record is not None else None
+                self.state.update_ride(
+                    ride_id,
+                    face_verification_id=record_id,
+                    face_verification_image_url=image_url,
+                )
+
+                save_error = record_error or (
+                    record.image_error if record is not None else None
+                )
+                if result.outcome == FACE_MATCHED:
+                    message = f"乘客 {ride.passenger_id} 核验成功，等待确认上车"
+                    if save_error is not None:
+                        message += f"；识别照片保存失败：{save_error}"
+                    self.state.update_ride(
+                        ride_id,
+                        status=RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION,
+                        eta_text=message,
+                    )
+                    self.state.append_ride_event(ride_id, "car", message)
+                elif result.outcome == FACE_TIMEOUT:
+                    message = "本次乘客核验超时，小车继续在起点停车"
+                    if save_error is not None:
+                        message += f"；诊断照片保存失败：{save_error}"
+                    self.state.update_ride(
+                        ride_id,
+                        status=RIDE_STATUS_WAITING_PASSENGER_RETRY,
+                        eta_text=message,
+                    )
+                    self.state.append_ride_event(ride_id, "car", message)
+                else:
+                    raise RuntimeError(f"未知人脸核验结果: {result.outcome}")
+
+            if result.outcome == FACE_MATCHED:
+                return self._wait_for_command(ride_id) == COMMAND_CONFIRM_BOARDING
+            if self._wait_for_command(ride_id) != COMMAND_RETRY_FACE:
+                return False
+
+    def _wait_for_command(self, ride_id: str):
+        """释放状态锁并无限期等待同一行程的一项用户命令。"""
+
+        with self._command_condition:
+            while self._is_active_ride(ride_id) and ride_id not in self._pending_commands:
+                self._command_condition.wait()
+            if not self._is_active_ride(ride_id):
+                self._pending_commands.pop(ride_id, None)
+                return None
+            return self._pending_commands.pop(ride_id)
+
+    def _require_active_status(self, ride_id: str, expected_status: str, message: str):
+        """校验用户命令只作用于指定活动行程的准确状态。"""
+
+        active_ride = self.state.get_active_ride()
+        if active_ride is None or active_ride.id != ride_id:
+            raise RuntimeStateError(
+                "ride_not_active",
+                "只能操作当前活动行程",
+                "ride_id",
             )
+        if active_ride.status != expected_status:
+            raise RuntimeStateError(
+                "invalid_ride_operation",
+                message,
+                "status",
+            )
+        return active_ride
 
     def _mark_waypoint_arrived(
         self,
@@ -389,6 +561,7 @@ class RideService:
 
     def _finish_arrived(self, ride_id: str, destination: str, progress: List[str]):
         self._cancel_reasons.pop(ride_id, None)
+        self._pending_commands.pop(ride_id, None)
         message = f"已到达终点 {destination}，行程完成"
         self.state.finish_ride(
             ride_id,
@@ -460,6 +633,7 @@ class RideService:
 
     def _mark_failed(self, ride_id: str, exc: Exception):
         self._cancel_reasons.pop(ride_id, None)
+        self._pending_commands.pop(ride_id, None)
         ride = self.state.get_ride(ride_id)
         message = f"行程失败：{exc}"
         failed = self.state.finish_ride(

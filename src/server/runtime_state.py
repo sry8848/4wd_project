@@ -25,7 +25,14 @@ CAR_MODE_IDLE = "idle"
 CAR_MODE_RUNNING = "running"
 CAR_MODE_ERROR = "error"
 
-RIDE_STATUS_DISPATCHING = "dispatching"
+RIDE_STATUS_TO_PICKUP = "to_pickup"
+RIDE_STATUS_VERIFYING_PASSENGER = "verifying_passenger"
+RIDE_STATUS_WAITING_PASSENGER_RETRY = "waiting_passenger_retry"
+RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION = "awaiting_boarding_confirmation"
+RIDE_STATUS_IN_TRIP = "in_trip"
+RIDE_STATUS_CLASSIFYING_OBSTACLE = "classifying_obstacle"
+RIDE_STATUS_SCANNING_TOLL_QR = "scanning_toll_qr"
+RIDE_STATUS_WAITING_TOLL_CLEARANCE = "waiting_toll_clearance"
 RIDE_STATUS_CANCELING = "canceling"
 RIDE_STATUS_ARRIVED = "arrived"
 RIDE_STATUS_FAILED = "failed"
@@ -35,6 +42,19 @@ TERMINAL_RIDE_STATUSES = (
     RIDE_STATUS_FAILED,
     RIDE_STATUS_CANCELED,
 )
+VALID_RIDE_STATUSES = (
+    RIDE_STATUS_TO_PICKUP,
+    RIDE_STATUS_VERIFYING_PASSENGER,
+    RIDE_STATUS_WAITING_PASSENGER_RETRY,
+    RIDE_STATUS_AWAITING_BOARDING_CONFIRMATION,
+    RIDE_STATUS_IN_TRIP,
+    RIDE_STATUS_CLASSIFYING_OBSTACLE,
+    RIDE_STATUS_SCANNING_TOLL_QR,
+    RIDE_STATUS_WAITING_TOLL_CLEARANCE,
+    RIDE_STATUS_CANCELING,
+    *TERMINAL_RIDE_STATUSES,
+)
+_UNSET = object()
 
 
 class RuntimeStateError(RuntimeError):
@@ -133,15 +153,18 @@ class RuntimeState:
         ride_id = f"ride-{created_at.replace(':', '').replace('-', '')}-{self._ride_counter}"
         ride = RideStatusResponse(
             id=ride_id,
-            status=RIDE_STATUS_DISPATCHING,
+            status=RIDE_STATUS_TO_PICKUP,
+            passenger_id=request.passenger_id,
             start=request.start,
             waypoints=list(request.waypoints),
             end=request.end,
             current_position=self._current_position,
             route=[],
             progress=[self._current_position],
-            eta_text="派单中",
+            eta_text="正在前往起点",
             error_message=None,
+            face_verification_id=None,
+            face_verification_image_url=None,
             created_at=created_at,
             updated_at=created_at,
         )
@@ -152,7 +175,11 @@ class RuntimeState:
         self._updated_at = created_at
 
         route_label = " → ".join([request.start, *request.waypoints, request.end])
-        self.append_ride_event(ride_id, "passenger", f"请求路线 {route_label}")
+        self.append_ride_event(
+            ride_id,
+            "passenger",
+            f"乘客 {request.passenger_id} 请求路线 {route_label}",
+        )
         return self._rides[ride_id]
 
     def get_active_ride(self):
@@ -224,7 +251,9 @@ class RuntimeState:
         route=None,
         progress=None,
         eta_text=None,
-        error_message=None,
+        error_message=_UNSET,
+        face_verification_id=_UNSET,
+        face_verification_image_url=_UNSET,
     ):
         """更新非终止行程状态。
 
@@ -237,8 +266,16 @@ class RuntimeState:
         progress: 新进度路径，不传则保持原值。
         eta_text: 前端展示文字，不传则保持原值。
         error_message: 错误说明，不传则保持原值。
+        face_verification_id: 最新人脸核验记录 ID，不传则保持原值。
+        face_verification_image_url: 最新核验图片地址，不传则保持原值。
         """
         ride = self.get_ride(ride_id)
+        if status is not None and status not in VALID_RIDE_STATUSES:
+            raise RuntimeStateError(
+                "invalid_ride_status",
+                f"不支持的行程状态: {status}",
+                "status",
+            )
         updated_position = (
             normalize_point(current_position, "current_position")
             if current_position is not None
@@ -255,7 +292,19 @@ class RuntimeState:
             route=list(route) if route is not None else ride.route,
             progress=list(progress) if progress is not None else ride.progress,
             eta_text=eta_text if eta_text is not None else ride.eta_text,
-            error_message=error_message,
+            error_message=(
+                error_message if error_message is not _UNSET else ride.error_message
+            ),
+            face_verification_id=(
+                face_verification_id
+                if face_verification_id is not _UNSET
+                else ride.face_verification_id
+            ),
+            face_verification_image_url=(
+                face_verification_image_url
+                if face_verification_image_url is not _UNSET
+                else ride.face_verification_image_url
+            ),
             updated_at=updated_at,
         )
         self._rides[ride_id] = updated

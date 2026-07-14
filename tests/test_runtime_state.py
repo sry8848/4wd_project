@@ -43,26 +43,32 @@ class RuntimeStateTest(unittest.TestCase):
 
     def test_create_ride_sets_active_ride_and_records_passenger_event(self):
         request = RideCreateRequest.from_payload(
-            {"start": "A1", "waypoints": ["C2"], "end": "E5"}
+            {
+                "passenger_id": "Alice",
+                "start": "A1",
+                "waypoints": ["C2"],
+                "end": "E5",
+            }
         )
 
         ride = self.state.create_ride(request)
         status = self.state.get_car_status()
         events, next_after = self.state.list_ride_events(ride.id)
 
-        self.assertEqual(ride.status, "dispatching")
+        self.assertEqual(ride.status, "to_pickup")
+        self.assertEqual(ride.passenger_id, "Alice")
         self.assertEqual(ride.current_position, "C3")
         self.assertEqual(ride.progress, ["C3"])
-        self.assertEqual(ride.eta_text, "派单中")
+        self.assertEqual(ride.eta_text, "正在前往起点")
         self.assertEqual(status.mode, "running")
         self.assertEqual(status.active_ride_id, ride.id)
         self.assertEqual(events[0].type, "passenger")
-        self.assertEqual(events[0].text, "请求路线 A1 → C2 → E5")
+        self.assertEqual(events[0].text, "乘客 Alice 请求路线 A1 → C2 → E5")
         self.assertEqual(next_after, 1)
 
     def test_create_ride_rejects_second_active_ride(self):
         request = RideCreateRequest.from_payload(
-            {"start": "A1", "waypoints": [], "end": "E5"}
+            {"passenger_id": "Alice", "start": "A1", "waypoints": [], "end": "E5"}
         )
         self.state.create_ride(request)
 
@@ -74,7 +80,7 @@ class RuntimeStateTest(unittest.TestCase):
     def test_append_and_list_events_after_sequence(self):
         ride = self.state.create_ride(
             RideCreateRequest.from_payload(
-                {"start": "A1", "waypoints": [], "end": "E5"}
+                {"passenger_id": "Alice", "start": "A1", "waypoints": [], "end": "E5"}
             )
         )
         self.state.append_ride_event(ride.id, "car", "收到叫车请求，当前上报位置 C3")
@@ -89,7 +95,7 @@ class RuntimeStateTest(unittest.TestCase):
     def test_obstacle_event_keeps_record_id(self):
         ride = self.state.create_ride(
             RideCreateRequest.from_payload(
-                {"start": "A1", "waypoints": [], "end": "E5"}
+                {"passenger_id": "Alice", "start": "A1", "waypoints": [], "end": "E5"}
             )
         )
 
@@ -108,7 +114,7 @@ class RuntimeStateTest(unittest.TestCase):
     def test_update_ride_progress_updates_car_status_and_ride_fields(self):
         ride = self.state.create_ride(
             RideCreateRequest.from_payload(
-                {"start": "A1", "waypoints": [], "end": "E5"}
+                {"passenger_id": "Alice", "start": "A1", "waypoints": [], "end": "E5"}
             )
         )
 
@@ -131,10 +137,22 @@ class RuntimeStateTest(unittest.TestCase):
         self.assertEqual(car_status.heading, "east")
         self.assertEqual(car_status.last_message, "来车中")
 
+        with_face = self.state.update_ride(
+            ride.id,
+            error_message="保存失败",
+            face_verification_id="face_20260714_100000_123456",
+        )
+        preserved = self.state.update_ride(ride.id, eta_text="仍在等待")
+        self.assertEqual(preserved.error_message, with_face.error_message)
+        self.assertEqual(
+            preserved.face_verification_id,
+            with_face.face_verification_id,
+        )
+
     def test_finish_ride_clears_active_ride_for_terminal_status(self):
         ride = self.state.create_ride(
             RideCreateRequest.from_payload(
-                {"start": "A1", "waypoints": [], "end": "E5"}
+                {"passenger_id": "Alice", "start": "A1", "waypoints": [], "end": "E5"}
             )
         )
 

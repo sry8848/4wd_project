@@ -61,6 +61,16 @@
             </div>
 
             <form id="rideForm" class="ride-form">
+              <label class="field-row passenger-field" for="passengerSelect">
+                <span class="route-node passenger-node" aria-hidden="true">人</span>
+                <span class="field-body">
+                  <span class="field-label">乘客</span>
+                  <select id="passengerSelect" required>
+                    <option value="">请选择乘客</option>
+                  </select>
+                </span>
+              </label>
+
               <label id="startField" class="field-row route-field start-field active">
                 <span class="route-node route-circle" aria-hidden="true"></span>
                 <span class="field-body">
@@ -92,6 +102,15 @@
                   重置
                 </button>
               </div>
+
+              <section id="pickupActionPanel" class="pickup-action-panel" hidden aria-live="polite">
+                <p id="pickupActionStatus"></p>
+                <img id="faceVerificationImage" alt="本次乘客人脸核验照片" hidden />
+                <div class="pickup-action-buttons">
+                  <button id="retryFaceButton" class="primary-button" type="button" hidden>重新识别</button>
+                  <button id="confirmBoardingButton" class="primary-button" type="button" hidden>确认上车</button>
+                </div>
+              </section>
             </form>
 
           </div>

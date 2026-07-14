@@ -6,6 +6,7 @@ const homeView = document.querySelector("#homeView");
 const obstacleView = document.querySelector("#obstacleView");
 const navLinks = document.querySelectorAll("[data-view-link]");
 const rideForm = document.querySelector("#rideForm");
+const passengerSelect = document.querySelector("#passengerSelect");
 const startInput = document.querySelector("#startInput");
 const endInput = document.querySelector("#endInput");
 const datalist = document.querySelector("#gridPoints");
@@ -29,6 +30,11 @@ const routePolyline = document.querySelector("#routePolyline");
 const progressPolyline = document.querySelector("#progressPolyline");
 const refreshObstaclesButton = document.querySelector("#refreshObstaclesButton");
 const obstacleList = document.querySelector("#obstacleList");
+const pickupActionPanel = document.querySelector("#pickupActionPanel");
+const pickupActionStatus = document.querySelector("#pickupActionStatus");
+const faceVerificationImage = document.querySelector("#faceVerificationImage");
+const retryFaceButton = document.querySelector("#retryFaceButton");
+const confirmBoardingButton = document.querySelector("#confirmBoardingButton");
 
 let running = false;
 let carPoint = "C3";
@@ -40,6 +46,8 @@ let lastEventSeq = 0;
 let pollTimer = null;
 let obstacleRecords = new Map();
 let carHeading = "north";
+let passengerIds = [];
+let activeRideStatus = null;
 
 const terminalRideStatuses = new Set(["arrived", "failed", "canceled"]);
 const eventTypeLabels = {
@@ -261,7 +269,8 @@ function setCallButtonLabel(label) {
 function setRideRunning(isRunning) {
   const stateChanged = running !== isRunning;
   running = isRunning;
-  callButton.disabled = isRunning;
+  callButton.disabled = isRunning || passengerIds.length === 0;
+  passengerSelect.disabled = isRunning;
   startInput.disabled = isRunning;
   endInput.disabled = isRunning;
   addWaypointButton.disabled = isRunning;
@@ -279,6 +288,20 @@ function setRideRunning(isRunning) {
   if (stateChanged) {
     renderWaypoints();
   }
+}
+
+/** 使用后端启动时加载的准确标签重建乘客下拉框。 */
+function renderPassengerOptions() {
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "请选择乘客";
+  passengerSelect.replaceChildren(placeholder);
+  passengerIds.forEach((passengerId) => {
+    const option = document.createElement("option");
+    option.value = passengerId;
+    option.textContent = passengerId;
+    passengerSelect.append(option);
+  });
 }
 
 /**
@@ -516,6 +539,7 @@ function scheduleRidePoll(delay) {
  * 分步逻辑：写入起终点，重建途径点，再渲染表单。
  */
 function syncRideForm(ride) {
+  passengerSelect.value = ride.passenger_id;
   startInput.value = ride.start;
   endInput.value = ride.end;
   waypoints = ride.waypoints.map((value) => ({
@@ -524,6 +548,42 @@ function syncRideForm(ride) {
   }));
   activeTarget = "start";
   renderWaypoints();
+}
+
+/** 根据公开行程状态展示唯一允许的接客操作。 */
+function renderPickupActions(ride) {
+  pickupActionPanel.hidden = true;
+  retryFaceButton.hidden = true;
+  confirmBoardingButton.hidden = true;
+  retryFaceButton.disabled = false;
+  confirmBoardingButton.disabled = false;
+  faceVerificationImage.hidden = true;
+  faceVerificationImage.removeAttribute("src");
+
+  if (ride.status === "verifying_passenger") {
+    pickupActionPanel.hidden = false;
+    pickupActionStatus.textContent = `正在识别乘客 ${ride.passenger_id}，小车保持停车。`;
+    return;
+  }
+  if (ride.status === "waiting_passenger_retry") {
+    pickupActionPanel.hidden = false;
+    pickupActionStatus.textContent = "本次识别未通过，小车正在起点等待。";
+    retryFaceButton.hidden = false;
+    return;
+  }
+  if (ride.status !== "awaiting_boarding_confirmation") {
+    return;
+  }
+
+  pickupActionPanel.hidden = false;
+  confirmBoardingButton.hidden = false;
+  if (ride.face_verification_image_url) {
+    pickupActionStatus.textContent = `乘客 ${ride.passenger_id} 识别成功，请确认已经上车。`;
+    faceVerificationImage.src = ride.face_verification_image_url;
+    faceVerificationImage.hidden = false;
+  } else {
+    pickupActionStatus.textContent = "识别成功，照片保存失败；确认乘客已上车后仍可继续。";
+  }
 }
 
 /**
@@ -536,11 +596,13 @@ function syncRideForm(ride) {
 function renderRide(ride, heading = null) {
   const routeStops = [ride.start, ...ride.waypoints, ride.end];
   const isTerminal = terminalRideStatuses.has(ride.status);
+  activeRideStatus = ride.status;
   setCarPoint(ride.current_position, heading);
   etaText.textContent = ride.eta_text;
   renderRouteTitle(routeStops, ride.progress);
   paintRoute(ride.start, ride.end, ride.progress, ride.route);
   setRideRunning(!isTerminal);
+  renderPickupActions(ride);
   if (ride.status === "canceling") {
     setCancelingState();
   }
@@ -713,10 +775,13 @@ function resetRide(options = {}) {
   const reportedPoint = carPoint;
   stopPolling();
   activeRideId = null;
+  activeRideStatus = null;
   lastEventSeq = 0;
   waypoints = [];
   activeTarget = "start";
   setRideRunning(false);
+  passengerSelect.value = "";
+  pickupActionPanel.hidden = true;
   renderWaypoints();
   resetButton.disabled = false;
   setCallButtonLabel("叫车");
@@ -806,11 +871,14 @@ async function initializeApp() {
     points = grid.points;
     initGrid();
 
-    const [carStatus, activeRide, obstacles] = await Promise.all([
+    const [passengers, carStatus, activeRide, obstacles] = await Promise.all([
+      requestJson("/api/passengers"),
       requestJson("/api/car/status"),
       requestJson("/api/rides/active"),
       requestJson("/api/obstacles"),
     ]);
+    passengerIds = passengers;
+    renderPassengerOptions();
     setCarPoint(carStatus.current_position, carStatus.heading);
     obstacleRecords = new Map(
       obstacles.map((record) => [record.id, record])
@@ -824,7 +892,12 @@ async function initializeApp() {
 
     resetRide();
     messageList.innerHTML = "";
-    setMessage("系统", carStatus.last_message);
+    if (passengerIds.length === 0) {
+      setCallButtonLabel("暂无可用乘客");
+      setMessage("系统", "没有可用乘客，请先在树莓派命令行登记人脸并重启后端。");
+    } else {
+      setMessage("系统", carStatus.last_message);
+    }
   } catch (error) {
     callButton.disabled = true;
     resetButton.disabled = true;
@@ -841,6 +914,10 @@ rideForm.addEventListener("submit", async (event) => {
 
   let requestStarted = false;
   try {
+    const passengerId = passengerSelect.value;
+    if (!passengerId || !passengerIds.includes(passengerId)) {
+      throw new Error("请从已登记乘客列表中选择一人");
+    }
     const start = validatePoint(startInput.value, "起点");
     const end = validatePoint(endInput.value, "终点");
     const validatedWaypoints = waypoints.map((waypoint, index) =>
@@ -866,11 +943,25 @@ rideForm.addEventListener("submit", async (event) => {
     const ride = await requestJson("/api/rides", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ start, waypoints: validatedWaypoints, end }),
+      body: JSON.stringify({
+        passenger_id: passengerId,
+        start,
+        waypoints: validatedWaypoints,
+        end,
+      }),
     });
     startTrackingRide(ride);
   } catch (error) {
-    if (!requestStarted || (error.status >= 400 && error.status < 500)) {
+    const definitelyRejected = new Set([
+      "hardware_not_ready",
+      "camera_not_ready",
+      "face_recognition_not_ready",
+    ]);
+    if (
+      !requestStarted
+      || (error.status >= 400 && error.status < 500)
+      || definitelyRejected.has(error.code)
+    ) {
       callButton.disabled = false;
       setCallButtonLabel("叫车");
       setMessage("系统", error.message);
@@ -884,6 +975,42 @@ rideForm.addEventListener("submit", async (event) => {
   }
 });
 
+retryFaceButton.addEventListener("click", async () => {
+  if (activeRideId === null) {
+    return;
+  }
+  retryFaceButton.disabled = true;
+  pickupActionStatus.textContent = "正在提交重新识别请求。";
+  try {
+    const ride = await requestJson(
+      `/api/rides/${activeRideId}/face-verification/retry`,
+      { method: "POST" }
+    );
+    renderRide(ride);
+  } catch (error) {
+    retryFaceButton.disabled = false;
+    showCurrentMessage("系统", error.message);
+  }
+});
+
+confirmBoardingButton.addEventListener("click", async () => {
+  if (activeRideId === null) {
+    return;
+  }
+  confirmBoardingButton.disabled = true;
+  pickupActionStatus.textContent = "正在确认上车。";
+  try {
+    const ride = await requestJson(
+      `/api/rides/${activeRideId}/confirm-boarding`,
+      { method: "POST" }
+    );
+    renderRide(ride);
+  } catch (error) {
+    confirmBoardingButton.disabled = false;
+    showCurrentMessage("系统", error.message);
+  }
+});
+
 resetButton.addEventListener("click", async () => {
   if (!running || activeRideId === null) {
     resetRide({ reportPosition: true });
@@ -893,7 +1020,17 @@ resetButton.addEventListener("click", async () => {
   const rideId = activeRideId;
   stopPolling();
   resetButton.disabled = true;
-  showCurrentMessage("系统", "取消请求发送中，小车将继续到前方下一个节点停车");
+  const stationaryAtPickup = new Set([
+    "verifying_passenger",
+    "waiting_passenger_retry",
+    "awaiting_boarding_confirmation",
+  ]).has(activeRideStatus);
+  showCurrentMessage(
+    "系统",
+    stationaryAtPickup
+      ? "取消请求发送中，小车将保持在起点停车"
+      : "取消请求发送中，小车将继续到前方下一个节点停车"
+  );
   try {
     await requestJson(`/api/rides/${rideId}/cancel`, { method: "POST" });
     await pollRide();

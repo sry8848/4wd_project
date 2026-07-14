@@ -15,12 +15,14 @@ class ServerSchemasTest(unittest.TestCase):
     def test_ride_create_request_normalizes_route_points(self):
         request = RideCreateRequest.from_payload(
             {
+                "passenger_id": "Alice",
                 "start": " a1 ",
                 "waypoints": [" c2 "],
                 "end": "e5",
             }
         )
 
+        self.assertEqual(request.passenger_id, "Alice")
         self.assertEqual(request.start, "A1")
         self.assertEqual(request.waypoints, ["C2"])
         self.assertEqual(request.end, "E5")
@@ -29,6 +31,7 @@ class ServerSchemasTest(unittest.TestCase):
         with self.assertRaises(PointValidationError) as context:
             RideCreateRequest.from_payload(
                 {
+                    "passenger_id": "Alice",
                     "start": "A1",
                     "waypoints": [],
                     "end": "E5",
@@ -38,6 +41,24 @@ class ServerSchemasTest(unittest.TestCase):
 
         self.assertEqual(context.exception.code, "invalid_request")
         self.assertEqual(context.exception.field, "current_position")
+
+    def test_ride_create_request_requires_valid_passenger_id(self):
+        with self.assertRaises(PointValidationError) as missing:
+            RideCreateRequest.from_payload(
+                {"start": "A1", "waypoints": [], "end": "E5"}
+            )
+        self.assertEqual(missing.exception.field, "passenger_id")
+
+        with self.assertRaises(PointValidationError) as invalid:
+            RideCreateRequest.from_payload(
+                {
+                    "passenger_id": 1,
+                    "start": "A1",
+                    "waypoints": [],
+                    "end": "E5",
+                }
+            )
+        self.assertEqual(invalid.exception.code, "invalid_passenger")
 
     def test_error_response_serializes_validation_error(self):
         error = PointValidationError("invalid_point", "起点无效", "start")
@@ -95,6 +116,7 @@ class ServerSchemasTest(unittest.TestCase):
         response = RideStatusResponse(
             id="ride-1",
             status="to_pickup",
+            passenger_id="Alice",
             start="A1",
             waypoints=["C2"],
             end="E5",
@@ -103,6 +125,8 @@ class ServerSchemasTest(unittest.TestCase):
             progress=["C3", "B3"],
             eta_text="来车中",
             error_message=None,
+            face_verification_id="face_20260714_100000_123456",
+            face_verification_image_url="/api/face-verifications/face_20260714_100000_123456/image",
             created_at="2026-07-09T15:30:00+08:00",
             updated_at="2026-07-09T15:30:03+08:00",
         )
@@ -111,6 +135,7 @@ class ServerSchemasTest(unittest.TestCase):
 
         self.assertEqual(data["id"], "ride-1")
         self.assertEqual(data["status"], "to_pickup")
+        self.assertEqual(data["passenger_id"], "Alice")
         self.assertEqual(data["waypoints"], ["C2"])
         self.assertEqual(data["progress"], ["C3", "B3"])
         self.assertIsNone(data["error_message"])

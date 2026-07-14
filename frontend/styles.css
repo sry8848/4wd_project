@@ -919,6 +919,54 @@ body.selecting-end .legend-end {
   color: #8f2b24;
 }
 
+.passenger-field select {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+
+.passenger-node {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pickup-action-panel {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid rgba(39, 93, 78, 0.2);
+  border-radius: 14px;
+  background: rgba(232, 245, 239, 0.72);
+}
+
+.pickup-action-panel p {
+  margin: 0 0 12px;
+  line-height: 1.6;
+}
+
+.pickup-action-panel img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.pickup-action-buttons {
+  display: flex;
+  gap: 10px;
+}
+
 .obstacle-card dl {
   display: grid;
   grid-template-columns: 84px 1fr;

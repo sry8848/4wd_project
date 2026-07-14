@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
@@ -14,16 +15,21 @@ from src.server.point_codec import (
 )
 
 
+PASSENGER_ID_RE = re.compile(r"^[A-Za-z0-9_\-\u4e00-\u9fff]{1,32}$")
+
+
 @dataclass(frozen=True)
 class RideCreateRequest:
     """叫车请求数据。
 
     参数说明：
+    passenger_id: 已登记并由用户选择的乘客标签。
     start: 乘客起点，格式为 A1 到 E5。
     waypoints: 途径点列表，第一版最多 3 个。
     end: 乘客终点，格式为 A1 到 E5。
     """
 
+    passenger_id: str
     start: str
     waypoints: List[str]
     end: str
@@ -33,7 +39,7 @@ class RideCreateRequest:
         """从前端 JSON 字典创建并校验叫车请求。
 
         参数说明：
-        payload: HTTP 请求体反序列化后的字典，只允许 start、waypoints、end。
+        payload: HTTP 请求体反序列化后的字典，只允许 passenger_id、start、waypoints、end。
         """
         if not isinstance(payload, dict):
             raise PointValidationError(
@@ -41,7 +47,7 @@ class RideCreateRequest:
                 "请求体必须是 JSON 对象",
             )
 
-        required_fields = ("start", "waypoints", "end")
+        required_fields = ("passenger_id", "start", "waypoints", "end")
         for field in required_fields:
             if field not in payload:
                 raise PointValidationError(
@@ -59,12 +65,27 @@ class RideCreateRequest:
                     field,
                 )
 
+        passenger_id = payload["passenger_id"]
+        if not isinstance(passenger_id, str) or not PASSENGER_ID_RE.fullmatch(
+            passenger_id
+        ):
+            raise PointValidationError(
+                "invalid_passenger",
+                "passenger_id 必须是 1 到 32 位已登记乘客标签",
+                "passenger_id",
+            )
+
         start, waypoints, end = validate_route_stops(
             payload["start"],
             payload["waypoints"],
             payload["end"],
         )
-        return cls(start=start, waypoints=waypoints, end=end)
+        return cls(
+            passenger_id=passenger_id,
+            start=start,
+            waypoints=waypoints,
+            end=end,
+        )
 
     def to_dict(self):
         """转换为可 JSON 序列化的字典。
@@ -154,7 +175,8 @@ class RideStatusResponse:
 
     参数说明：
     id: 行程 ID。
-    status: 行程状态，例如 dispatching、to_pickup、arrived。
+    status: 行程状态，例如 to_pickup、verifying_passenger、arrived。
+    passenger_id: 本次行程必须核验的已登记乘客标签。
     start: 起点。
     waypoints: 途径点列表。
     end: 终点。
@@ -163,12 +185,15 @@ class RideStatusResponse:
     progress: 已完成路径。
     eta_text: 前端展示用状态文字。
     error_message: 失败原因，没有失败时为 None。
+    face_verification_id: 最新一次已持久化人脸核验记录 ID。
+    face_verification_image_url: 最新记录存在真实 JPEG 时的读取地址。
     created_at: 创建时间。
     updated_at: 更新时间。
     """
 
     id: str
     status: str
+    passenger_id: str
     start: str
     waypoints: List[str]
     end: str
@@ -177,6 +202,8 @@ class RideStatusResponse:
     progress: List[str]
     eta_text: str
     error_message: Optional[str]
+    face_verification_id: Optional[str]
+    face_verification_image_url: Optional[str]
     created_at: str
     updated_at: str
 
