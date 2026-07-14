@@ -75,13 +75,27 @@ class GridNavigationHardwareTest(unittest.TestCase):
         )
         self.assertEqual(
             line_follower_class.call_args.kwargs["left_turn_speed"],
-            80,
+            60,
         )
         self.assertEqual(
             line_follower_class.call_args.kwargs["right_turn_speed"],
-            100,
+            80,
         )
+        self.assertEqual(line_follower_class.call_args.kwargs["turn_speed"], 60)
         self.assertEqual(line_follower_class.call_args.kwargs["search_speed"], 5)
+        self.assertEqual(edge_follower_class.call_args.kwargs["turn_speed"], 25)
+        self.assertEqual(
+            edge_follower_class.call_args.kwargs["node_center_speed"],
+            30,
+        )
+        self.assertEqual(
+            edge_follower_class.call_args.kwargs["line_acquire_timeout"],
+            5.0,
+        )
+        self.assertEqual(
+            edge_follower_class.call_args.kwargs["line_lost_timeout"],
+            8.0,
+        )
         self.assertEqual(
             navigator_class.call_args.kwargs["edge_max_seconds"],
             20,

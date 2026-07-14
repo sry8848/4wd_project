@@ -39,21 +39,21 @@ def parse_args():
         help="static blocked edge like A1-A2; can be passed multiple times",
     )
     parser.add_argument("--forward-speed", type=int, default=5)
-    parser.add_argument("--line-turn-speed", type=int, default=80)
+    parser.add_argument("--line-turn-speed", type=int, default=60)
     parser.add_argument(
         "--line-left-turn-speed",
         type=int,
-        default=80,
-        help="left correction speed; current car baseline is 80",
+        default=60,
+        help="left correction speed; current car baseline is 60",
     )
     parser.add_argument(
         "--line-right-turn-speed",
         type=int,
-        default=100,
-        help="right correction speed; current car baseline is 100",
+        default=80,
+        help="right correction speed; current car baseline is 80",
     )
     parser.add_argument("--search-speed", type=int, default=5)
-    parser.add_argument("--spin-speed", type=int, default=30)
+    parser.add_argument("--spin-speed", type=int, default=25)
     parser.add_argument("--left-turn-rough-seconds", type=float, default=0.4)
     parser.add_argument("--right-turn-rough-seconds", type=float, default=0.3)
     parser.add_argument("--uturn-rough-seconds", type=float, default=0.8)
@@ -61,11 +61,11 @@ def parse_args():
     parser.add_argument("--leave-node-min-seconds", type=float, default=0.10)
     parser.add_argument("--node-clear-samples", type=int, default=1)
     parser.add_argument("--node-confirm-samples", type=int, default=1)
-    parser.add_argument("--node-center-speed", type=int, default=20)
+    parser.add_argument("--node-center-speed", type=int, default=30)
     parser.add_argument("--node-center-seconds", type=float, default=0.10)
     parser.add_argument("--obstacle-confirm-samples", type=int, default=2)
-    parser.add_argument("--line-acquire-timeout", type=float, default=3.0)
-    parser.add_argument("--line-lost-timeout", type=float, default=5.0)
+    parser.add_argument("--line-acquire-timeout", type=float, default=5.0)
+    parser.add_argument("--line-lost-timeout", type=float, default=8.0)
     parser.add_argument("--reverse-speed", type=int, default=5)
     parser.add_argument("--reverse-turn-speed", type=int, default=20)
     parser.add_argument("--edge-timeout", type=float, default=20)
