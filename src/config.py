@@ -69,9 +69,9 @@ FACE_CASCADE_PATH = (
     "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"
 )
 
-# 当前实机正确乘客距离集中在 0.266~0.299；保留小幅余量并用连续帧抑制偶然命中。
-FACE_RECOGNITION_THRESHOLD = 0.31
-FACE_RECOGNITION_CONFIRM_FRAMES = 2
+# 课程演示采用宽松单帧确认；实机已知 0.327~0.329 可接受，0.421 仍应拒绝。
+FACE_RECOGNITION_THRESHOLD = 0.36
+FACE_RECOGNITION_CONFIRM_FRAMES = 1
 
 # 固定摄像头障碍视觉初始参数，实机标定阶段每次只调整一类变量。
 OBSTACLE_COLOR_MIN_AREA = 1500.0
