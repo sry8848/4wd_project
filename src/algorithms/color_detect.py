@@ -74,8 +74,8 @@ DEFAULT_COLOR_SPECS: Dict[str, ColorSpec] = {
     "red": ColorSpec(
         name="red",
         hsv_intervals=(
-            ((0, 120, 80), (10, 255, 255)),
-            ((170, 120, 80), (179, 255, 255)),
+            ((0, 100, 80), (10, 255, 255)),
+            ((170, 100, 80), (179, 255, 255)),
         ),
         display_bgr=(0, 0, 255),
     ),

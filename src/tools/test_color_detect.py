@@ -27,6 +27,7 @@ from src.algorithms.color_detect import (
     ColorDetectionResult,
     ColorDetector,
 )
+from src import config as project_config
 from src.hardware.camera import CameraCaptureError, CameraDevice, OpenCVCameraSession
 
 
@@ -108,13 +109,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-area",
         type=float,
-        default=1500.0,
+        default=project_config.OBSTACLE_COLOR_MIN_AREA,
         help="忽略小于该像素面积的色块。",
     )
     parser.add_argument(
         "--stable-frames",
         type=int,
-        default=3,
+        default=project_config.OBSTACLE_COLOR_CONFIRM_FRAMES,
         help="摄像头连续识别到同一主色多少帧后确认。",
     )
     parser.add_argument(
