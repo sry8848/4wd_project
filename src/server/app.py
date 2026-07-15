@@ -151,13 +151,16 @@ async def lifespan(app_instance: FastAPI):
         detector = HaarFaceDetector(
             cascade_path=project_config.FACE_CASCADE_PATH,
         )
-        recognizer = LocalFaceRecognizer(detector=detector, threshold=0.30)
+        recognizer = LocalFaceRecognizer(
+            detector=detector,
+            threshold=project_config.FACE_RECOGNITION_THRESHOLD,
+        )
         recognizer.load_dataset(FACE_DATASET_DIR)
         passenger_ids = recognizer.labels
         face_verifier = FaceVerificationTask(
             recognizer,
             camera,
-            confirm_frames=3,
+            confirm_frames=project_config.FACE_RECOGNITION_CONFIRM_FRAMES,
             timeout_seconds=20.0,
         )
         face_recorder = FaceVerificationRecorder(face_verification_store, camera)

@@ -25,6 +25,7 @@ from src.algorithms.face_recognition import (
     HaarFaceDetector,
     LocalFaceRecognizer,
 )
+from src import config as project_config
 from src.hardware.camera import CameraCaptureError, CameraDevice, OpenCVCameraSession
 
 
@@ -54,13 +55,13 @@ def parse_args() -> argparse.Namespace:
     recognize.add_argument(
         "--threshold",
         type=float,
-        default=0.30,
+        default=project_config.FACE_RECOGNITION_THRESHOLD,
         help="Maximum LBPH distance for a known face; lower is stricter.",
     )
     recognize.add_argument(
         "--confirm-frames",
         type=int,
-        default=3,
+        default=project_config.FACE_RECOGNITION_CONFIRM_FRAMES,
         help="Consecutive matching frames required before success.",
     )
     for subparser in (enroll, recognize):
