@@ -148,7 +148,9 @@ async def lifespan(app_instance: FastAPI):
     toll_clearance_task = None
     passenger_ids = ()
     try:
-        detector = HaarFaceDetector()
+        detector = HaarFaceDetector(
+            cascade_path=project_config.FACE_CASCADE_PATH,
+        )
         recognizer = LocalFaceRecognizer(detector=detector, threshold=0.30)
         recognizer.load_dataset(FACE_DATASET_DIR)
         passenger_ids = recognizer.labels

@@ -64,6 +64,11 @@ CAMERA_DEVICE_PATH = (
     "/dev/v4l/by-id/usb-lihappe8_Corp._Sanhao_Face-video-index0"
 )
 
+# 当前树莓派 OpenCV 4.1.2 未暴露 cv2.data.haarcascades；该系统路径已实机确认。
+FACE_CASCADE_PATH = (
+    "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"
+)
+
 # 固定摄像头障碍视觉初始参数，实机标定阶段每次只调整一类变量。
 OBSTACLE_COLOR_MIN_AREA = 1500.0
 OBSTACLE_COLOR_CONFIRM_FRAMES = 3

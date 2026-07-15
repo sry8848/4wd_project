@@ -151,7 +151,7 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                 server_app,
                 "HaarFaceDetector",
                 return_value=object(),
-            ), patch.object(
+            ) as detector_factory, patch.object(
                 server_app,
                 "LocalFaceRecognizer",
                 return_value=recognizer,
@@ -187,6 +187,9 @@ class ServerAppNavigationModeTest(unittest.TestCase):
                     self.assertIs(
                         server_app.app.state.obstacle_visual_task,
                         obstacle_visual_task,
+                    )
+                    detector_factory.assert_called_once_with(
+                        cascade_path=server_app.project_config.FACE_CASCADE_PATH,
                     )
 
         asyncio.run(run_lifespan())
