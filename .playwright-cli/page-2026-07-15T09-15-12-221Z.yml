@@ -1,0 +1,87 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "4WD 首页" [ref=e3] [cursor=pointer]:
+      - /url: "#home"
+      - text: 4WD
+    - navigation "主导航" [ref=e4]:
+      - link "首页" [ref=e5] [cursor=pointer]:
+        - /url: "#home"
+      - link "障碍记录" [ref=e8] [cursor=pointer]:
+        - /url: "#obstacles"
+  - main [ref=e11]:
+    - region "4WD 小车打车首页" [ref=e12]:
+      - complementary [ref=e13]:
+        - generic [ref=e14]:
+          - generic [ref=e15]:
+            - heading "呼叫小车" [level=1] [ref=e16]
+            - generic "小车实时位置" [ref=e17]:
+              - strong [ref=e20]: C3
+          - generic [ref=e21]:
+            - generic [ref=e22] [cursor=pointer]:
+              - generic [ref=e23]: 人
+              - generic [ref=e24]:
+                - generic [ref=e25]: 乘客
+                - combobox "乘客" [ref=e26]:
+                  - option "请选择乘客" [selected]
+            - generic [ref=e29] [cursor=pointer]:
+              - generic [ref=e30]: 起点
+              - combobox "起点" [ref=e31]: A1
+            - generic "途径点列表"
+            - generic [ref=e32] [cursor=pointer]:
+              - generic [ref=e34]:
+                - generic [ref=e35]: 终点
+                - combobox "终点" [ref=e36]: E5
+              - button "添加途径点" [ref=e37]: +
+            - generic [ref=e38]:
+              - button "连接后端中" [disabled] [ref=e39]:
+                - generic [ref=e40]: ▣
+                - text: 连接后端中
+              - button "重置" [disabled] [ref=e41] [cursor=pointer]:
+                - generic [ref=e42]: ↻
+                - text: 重置
+      - region "小车消息" [ref=e43]:
+        - generic [ref=e44]:
+          - paragraph [ref=e45]: 4WD Dispatch
+          - heading "小车消息" [level=2] [ref=e46]
+        - generic [ref=e47]:
+          - generic [ref=e48]: 系统
+          - strong [ref=e49]: 等待小车上报位置。
+        - list "消息列表" [ref=e50]
+      - region "5x5 点位地图" [ref=e51]:
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - paragraph [ref=e54]: Grid map
+            - heading "A1 → E5" [level=2] [ref=e55]
+          - generic [ref=e56]: 待开始
+        - generic [ref=e57]:
+          - generic [ref=e69]:
+            - button "A1" [ref=e70]
+            - button "A2" [ref=e71]
+            - button "A3" [ref=e72]
+            - button "A4" [ref=e73]
+            - button "A5" [ref=e74]
+            - button "B1" [ref=e75]
+            - button "B2" [ref=e76]
+            - button "B3" [ref=e77]
+            - button "B4" [ref=e78]
+            - button "B5" [ref=e79]
+            - button "C1" [ref=e80]
+            - button "C2" [ref=e81]
+            - button "C3" [ref=e82]
+            - button "C4" [ref=e83]
+            - button "C5" [ref=e84]
+            - button "D1" [ref=e85]
+            - button "D2" [ref=e86]
+            - button "D3" [ref=e87]
+            - button "D4" [ref=e88]
+            - button "D5" [ref=e89]
+            - button "E1" [ref=e90]
+            - button "E2" [ref=e91]
+            - button "E3" [ref=e92]
+            - button "E4" [ref=e93]
+            - button "E5" [ref=e94]
+          - generic "小车当前位置" [ref=e95]
+        - generic [ref=e98]:
+          - generic [ref=e99]: 起点
+          - generic [ref=e101]: 终点
+          - generic [ref=e103]: 小车实时位置

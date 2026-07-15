@@ -1,0 +1,11 @@
+{
+  "id": "face_20260715_091050_865890",
+  "ride_id": "ride-20260715T090855.054544+0000-1",
+  "passenger_id": "郭谨志",
+  "detected_passenger_id": null,
+  "result": "timeout",
+  "distance": 0.3368333578109741,
+  "created_at": "2026-07-15T09:10:50.865890+00:00",
+  "image_filename": "face_20260715_091050_865890.jpg",
+  "image_error": null
+}
