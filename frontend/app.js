@@ -55,7 +55,6 @@ const headingLabels = {
   south: "下",
   west: "左",
 };
-const cameraErrorImage = "/assets/camera-error.svg";
 
 function pointToCoord(point) {
   const normalized = point.trim().toUpperCase();
@@ -194,14 +193,8 @@ function addMessage(type, text, createdAt = null, obstacle = null) {
   item.append(time, document.createTextNode(`${type}：${text}`));
   if (obstacle !== null) {
     item.classList.add("obstacle-message");
-    const media = document.createElement("div");
-    media.className = "obstacle-message-media";
-    const image = document.createElement("img");
-    image.src = obstacle.image_url || cameraErrorImage;
-    image.alt = obstacle.image_url
-      ? `障碍边 ${obstacle.from_point} 到 ${obstacle.to_point} 的现场照片`
-      : "摄像头拍照失败默认图";
     const link = document.createElement("a");
+    link.className = "obstacle-message-link";
     link.href = "#obstacles";
     link.textContent = "查看障碍记录";
     link.addEventListener("click", (event) => {
@@ -209,8 +202,7 @@ function addMessage(type, text, createdAt = null, obstacle = null) {
       switchView("obstacles");
       loadObstacles().catch((error) => setMessage("系统", error.message));
     });
-    media.append(image, link);
-    item.append(media);
+    item.append(link);
   }
   messageList.append(item);
   messageList.scrollTop = messageList.scrollHeight;
@@ -582,7 +574,7 @@ async function appendRideEvents(eventPage) {
 /**
  * 渲染后端持久化障碍记录。
  * @param {object[]} records 按时间倒序的障碍记录。
- * 分步逻辑：空列表显示说明；否则复用统一记录卡片展示照片和字段。
+ * 分步逻辑：空列表显示说明；否则逐条展示障碍边、状态和恢复字段。
  */
 function renderObstacles(records) {
   obstacleList.replaceChildren();
@@ -597,11 +589,6 @@ function renderObstacles(records) {
   records.forEach((record) => {
     const card = document.createElement("article");
     card.className = "obstacle-card";
-    const image = document.createElement("img");
-    image.src = record.image_url || cameraErrorImage;
-    image.alt = record.image_url
-      ? `障碍边 ${record.from_point} 到 ${record.to_point} 的现场照片`
-      : "摄像头拍照失败默认图";
 
     const content = document.createElement("div");
     content.className = "obstacle-card-content";
@@ -627,13 +614,7 @@ function renderObstacles(records) {
       details.append(term, description);
     });
     content.append(top, details);
-    if (record.capture_error) {
-      const error = document.createElement("p");
-      error.className = "obstacle-capture-error";
-      error.textContent = `照片状态：${record.capture_error}`;
-      content.append(error);
-    }
-    card.append(image, content);
+    card.append(content);
     obstacleList.append(card);
   });
 }

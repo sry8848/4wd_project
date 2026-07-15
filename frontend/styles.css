@@ -562,22 +562,9 @@ h2 {
   font-size: 12px;
 }
 
-.obstacle-message-media {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.obstacle-message-link {
+  display: inline-block;
   margin-top: 12px;
-}
-
-.obstacle-message-media img {
-  width: 96px;
-  height: 64px;
-  border-radius: 10px;
-  object-fit: cover;
-  border: 1px solid var(--line);
-}
-
-.obstacle-message-media a {
   color: var(--ink);
   font-weight: 700;
   text-underline-offset: 3px;
@@ -872,20 +859,9 @@ body.selecting-end .legend-end {
 }
 
 .obstacle-card {
-  display: grid;
-  grid-template-columns: minmax(220px, 320px) 1fr;
-  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--canvas);
-}
-
-.obstacle-card > img {
-  width: 100%;
-  height: 100%;
-  min-height: 220px;
-  object-fit: cover;
-  background: var(--soft);
 }
 
 .obstacle-card-content {
@@ -933,12 +909,6 @@ body.selecting-end .legend-end {
 .obstacle-card dd {
   margin: 0;
   font-weight: 600;
-}
-
-.obstacle-capture-error {
-  margin: 18px 0 0;
-  color: #8f2b24;
-  font-size: 13px;
 }
 
 @media (max-width: 1240px) {
@@ -1019,11 +989,4 @@ body.selecting-end .legend-end {
     flex-direction: column;
   }
 
-  .obstacle-card {
-    grid-template-columns: 1fr;
-  }
-
-  .obstacle-card > img {
-    min-height: 200px;
-  }
 }
