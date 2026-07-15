@@ -11,6 +11,7 @@ from src.tasks.obstacle_visual_classification import (
     ERROR_CANCELED,
     ERROR_COLOR_CONFLICT,
     ERROR_QR_INVALID_PAYLOAD,
+    ERROR_QR_TIMEOUT,
     OBSTACLE_TYPE_ORDINARY,
     OBSTACLE_TYPE_TOLL,
     VISUAL_PHASE_SCANNING_TOLL_QR,
@@ -173,6 +174,22 @@ class ObstacleVisualClassificationTaskTest(unittest.TestCase):
         self.assertEqual(result.detected_color, "blue")
         self.assertEqual(result.classification_status, CLASSIFICATION_FAILED)
         self.assertEqual(result.recognition_error, ERROR_QR_INVALID_PAYLOAD)
+
+    def test_qr_timeout_records_last_qr_phase_frame(self):
+        task = self.build_task(
+            ["b1", "b2", "b3", "q1", "q2"],
+            {"b1": ("blue",), "b2": ("blue",), "b3": ("blue",)},
+            [
+                QRCodeDecodeDiagnostics((), False),
+                QRCodeDecodeDiagnostics((), False),
+            ],
+            qr_timeout_seconds=2.0,
+        )
+
+        result = task.classify()
+
+        self.assertEqual(result.recognition_error, ERROR_QR_TIMEOUT)
+        self.assertEqual(result.record_frame, "q2")
 
     def test_cancel_and_camera_failure_return_explicit_safe_failures(self):
         task = self.build_task(["r1"], {"r1": ("red",)})

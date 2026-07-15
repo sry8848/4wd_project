@@ -18,6 +18,7 @@ from src.algorithms.qr_detect import (
     QRCodeRecognizer,
     parse_qr_payload,
 )
+from src import config as project_config
 from src.hardware.camera import CameraCaptureError, OpenCVCameraSession
 from src.tools.qr_scan_diagnostics import (
     DEFAULT_QR_DIAGNOSTIC_DIR,
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=15.0,
+        default=project_config.TOLL_QR_TIMEOUT_SECONDS,
         help="Maximum scan time in seconds.",
     )
     parser.add_argument(

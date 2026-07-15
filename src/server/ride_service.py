@@ -267,7 +267,7 @@ class RideService:
                             raise RuntimeError(f"未知障碍视觉阶段: {phase}")
                         set_obstacle_stage(
                             RIDE_STATUS_SCANNING_TOLL_QR,
-                            "已确认蓝色障碍，正在识别收费站二维码",
+                            "已确认蓝色障碍，请换成二维码并对准摄像头",
                         )
 
                     visual_result = obstacle_visual_task.classify(

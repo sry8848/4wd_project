@@ -79,7 +79,7 @@ class ObstacleVisualClassificationTask:
         *,
         color_confirm_frames: int = 3,
         color_timeout_seconds: float = 15.0,
-        qr_timeout_seconds: float = 15.0,
+        qr_timeout_seconds: float = 30.0,
         monotonic_fn: Callable[[], float] = time.monotonic,
     ):
         if color_confirm_frames <= 0:
@@ -218,13 +218,12 @@ class ObstacleVisualClassificationTask:
                 time.sleep(0.1)
                 continue
             qr_frame_seen = True
+            diagnostic_frame = frame
             try:
                 diagnostics = self.qr_recognizer.decode_with_diagnostics(frame)
             except Exception:
                 return self._failed_result("blue", ERROR_QR_DETECTION, frame)
 
-            if diagnostics.corners_detected or diagnostics.texts:
-                diagnostic_frame = frame
             for raw_text in diagnostics.texts:
                 try:
                     payload = parse_qr_payload(raw_text)
