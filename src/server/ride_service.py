@@ -416,7 +416,7 @@ class RideService:
         point: str,
         arrived_at: str,
     ):
-        """提交到点邮件，发送结果只写消息，不改变行程状态。"""
+        """提交到点邮件；成功写入前端事件，失败只记录后端日志。"""
 
         ride = self.state.get_ride(ride_id)
         route_label = " → ".join([ride.start, *ride.waypoints, ride.end])
@@ -447,10 +447,12 @@ class RideService:
                         f"QQ 邮件已发送：到达{point_kind} {point}",
                     )
                 else:
-                    self.state.append_ride_event(
+                    LOGGER.error(
+                        "QQ 邮件发送失败 ride=%s point_kind=%s point=%s: %s",
                         ride_id,
-                        "system",
-                        f"QQ 邮件发送失败（到达{point_kind} {point}）：{error}",
+                        point_kind,
+                        point,
+                        error,
                     )
 
         try:

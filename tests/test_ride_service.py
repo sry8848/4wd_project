@@ -198,7 +198,27 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         self.assertEqual(finished.current_position, "C3")
         self.mail_notifier.notify.assert_not_called()
 
-    def test_mail_failure_adds_system_event_without_failing_arrived_ride(self):
+    def test_mail_success_adds_mail_event(self):
+        ride = self.submit(start="C3", end="C4")
+        navigator = FakeNavigator([[((2, 3), "east")]])
+
+        self.service.run_hardware_ride(
+            ride.id,
+            navigator,
+            self.obstacle_recorder,
+        )
+        result_callback = self.mail_notifier.notify.call_args_list[-1].args[2]
+        result_callback(None)
+
+        events, _next_after = self.state.list_ride_events(ride.id)
+        self.assertTrue(
+            any(
+                event.type == "mail" and "QQ 邮件已发送：到达终点 C4" == event.text
+                for event in events
+            )
+        )
+
+    def test_mail_failure_only_logs_without_failing_arrived_ride(self):
         ride = self.submit(start="C3", end="C4")
         navigator = FakeNavigator([[((2, 3), "east")]])
 
@@ -210,17 +230,15 @@ class RideServiceHardwareRideTest(unittest.TestCase):
         result_callbacks = [
             call.args[2] for call in self.mail_notifier.notify.call_args_list
         ]
-        result_callbacks[-1](RuntimeError("SMTP rejected"))
+        events_before, _next_after = self.state.list_ride_events(ride.id)
+        with self.assertLogs("src.server.ride_service", level="ERROR") as logs:
+            result_callbacks[-1](RuntimeError("SMTP rejected"))
 
         self.assertEqual(finished.status, "arrived")
         self.assertEqual(self.state.get_ride(ride.id).status, "arrived")
-        events, _next_after = self.state.list_ride_events(ride.id)
-        self.assertTrue(
-            any(
-                event.type == "system" and "SMTP rejected" in event.text
-                for event in events
-            )
-        )
+        events_after, _next_after = self.state.list_ride_events(ride.id)
+        self.assertEqual(events_after, events_before)
+        self.assertTrue(any("SMTP rejected" in message for message in logs.output))
 
     def test_obstacle_callback_persists_record_and_publishes_event(self):
         ride = self.submit(start="C4", end="C5")
