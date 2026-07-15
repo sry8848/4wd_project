@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.hardware.camera import CameraCaptureError, OpenCVCameraSession
+from src.hardware.camera import (
+    CameraCaptureError,
+    OpenCVCameraSession,
+    write_diagnostic_frame,
+)
 
 
 class FakeGrayFrame:
@@ -69,6 +73,21 @@ class CameraFrameDiagnosticsTest(unittest.TestCase):
             target = Path(temp_dir) / "qr_timeout.jpg"
             with self.assertRaisesRegex(CameraCaptureError, "Failed to write"):
                 session.save_diagnostic_frame(target, FakeFrame())
+
+    def test_standalone_writer_does_not_need_a_camera_session(self):
+        cv2 = FakeCV2()
+        frame = FakeFrame()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "after_task.jpg"
+            result = write_diagnostic_frame(
+                target,
+                frame,
+                cv2_module=cv2,
+            )
+
+        self.assertEqual(result.path, target)
+        self.assertEqual(cv2.writes, [(str(target), frame)])
 
 
 if __name__ == "__main__":

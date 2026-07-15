@@ -1,4 +1,4 @@
-"""Own the backend's single long-lived OpenCV camera session."""
+"""Own the backend camera while keeping capture handles task-scoped."""
 
 from __future__ import annotations
 
@@ -6,14 +6,18 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional
 
-from src.hardware.camera import CameraCaptureError, OpenCVCameraSession
+from src.hardware.camera import (
+    CameraCaptureError,
+    OpenCVCameraSession,
+    write_diagnostic_frame,
+)
 
 
 LOGGER = logging.getLogger(__name__)
 
 
 class BackendCamera:
-    """后端进程内唯一的长期摄像头资源所有者。
+    """后端进程内唯一的摄像头资源所有者。
 
     参数说明：
     device: OpenCV 摄像头编号或稳定的 V4L2 设备路径。
@@ -32,27 +36,107 @@ class BackendCamera:
         self.height = height
         self._session_factory = session_factory
         self._session: Optional[OpenCVCameraSession] = None
-        self._started = False
+        self._ready = False
         self.error: Optional[str] = None
 
     @property
-    def available(self) -> bool:
-        """返回当前进程是否仍持有可用于抓拍的摄像头。"""
+    def ready(self) -> bool:
+        """返回最近一次打开或读帧是否成功，不表示当前持有句柄。"""
 
-        return self._session is not None
+        return self._ready
 
-    def start(self) -> bool:
-        """后端启动时只尝试一次打开摄像头。
+    def probe(self) -> bool:
+        """启动时读取一帧确认设备状态，然后立即释放句柄。
 
         分步逻辑：
-        1. 创建并打开唯一 OpenCV 会话。
-        2. 已知摄像头错误只记录为不可用，不阻止后端启动。
-        3. 同一实例禁止重复启动，避免产生第二个设备所有者。
+        1. 通过 read_frame() 按需打开并读取一帧。
+        2. 已知摄像头错误只更新健康状态，不阻止后端启动。
+        3. 无论成功失败都释放探测句柄，等待真实视觉任务重新打开。
         """
 
-        if self._started:
-            raise RuntimeError("后端摄像头只能启动一次")
-        self._started = True
+        try:
+            self.read_frame()
+        except CameraCaptureError as exc:
+            LOGGER.warning("Backend camera probe failed: %s", exc)
+            return False
+        finally:
+            self.close()
+        return self.ready
+
+    def capture(self, output_path) -> Path:
+        """执行一次独立抓拍，并在结束后释放摄像头句柄。
+
+        参数说明：
+        output_path: ObstacleStore 为本条记录分配的唯一 JPEG 路径。
+
+        分步逻辑：
+        1. 按需打开会话，丢弃一个可能缓存的旧帧并写入 JPEG。
+        2. 打开或抓拍失败时记录最近错误，但不永久禁用摄像头。
+        3. 无论结果如何都释放本次抓拍句柄，后续调用可以重新尝试。
+        """
+
+        session = self._ensure_session()
+        try:
+            result = session.capture(output_path, warmup_frames=1)
+        except CameraCaptureError as exc:
+            self._ready = False
+            self.error = str(exc)
+            LOGGER.warning("Backend camera capture failed: %s", exc)
+            raise
+        else:
+            self._ready = True
+            self.error = None
+            return result.path
+        finally:
+            self.close()
+
+    def read_frame(self):
+        """从当前任务会话读取一张独立 BGR 帧。
+
+        分步逻辑：
+        1. 没有活动会话时按需打开，已有会话时直接复用。
+        2. 读取独立帧，避免调用方修改摄像头内部缓冲区。
+        3. 打开或读帧失败时释放失效会话；下一次调用可以重新打开。
+        """
+
+        session = self._ensure_session()
+        try:
+            frame = session.read_frame(copy=True)
+        except CameraCaptureError as exc:
+            self.close()
+            self._ready = False
+            self.error = str(exc)
+            LOGGER.warning("Backend camera frame read failed: %s", exc)
+            raise
+        self._ready = True
+        self.error = None
+        return frame
+
+    def save_frame(self, output_path, frame) -> Path:
+        """保存调用方选中的准确帧，不重新读取摄像头。
+
+        参数说明：
+        output_path: 目标 JPEG 路径。
+        frame: 先前由 read_frame() 返回的 BGR 帧。
+
+        写盘只使用内存帧，不要求摄像头仍处于打开状态，也不改变设备健康状态。
+        """
+
+        return write_diagnostic_frame(output_path, frame).path
+
+    def close(self):
+        """幂等释放当前任务持有的摄像头句柄。"""
+
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def _ensure_session(self) -> OpenCVCameraSession:
+        """复用当前会话，或为本次视觉任务打开一个新会话。"""
+
+        if self._session is not None:
+            return self._session
+
         session = self._session_factory(
             device_index=self.device,
             width=self.width,
@@ -62,78 +146,12 @@ class BackendCamera:
             session.open()
         except CameraCaptureError as exc:
             session.close()
+            self._ready = False
             self.error = str(exc)
-            LOGGER.error("Backend camera unavailable at startup: %s", exc)
-            return False
-
+            LOGGER.warning("Backend camera open failed: %s", exc)
+            raise
         self._session = session
-        self.error = None
-        return True
-
-    def capture(self, output_path) -> Path:
-        """使用长期会话抓拍 JPEG；失败后本次进程不再重连。
-
-        参数说明：
-        output_path: ObstacleStore 为本条记录分配的唯一 JPEG 路径。
-
-        分步逻辑：
-        1. 丢弃一个可能缓存的旧帧，再写入真实 JPEG。
-        2. 读取或写盘失败时立即释放会话并保存错误原因。
-        3. 后续调用直接报告不可用，等待后端重启重新初始化。
-        """
-
-        if self._session is None:
-            raise CameraCaptureError(self.error or "后端摄像头不可用")
-        try:
-            result = self._session.capture(output_path, warmup_frames=1)
-        except CameraCaptureError as exc:
-            self._session.close()
-            self._session = None
-            self.error = str(exc)
-            LOGGER.error("Backend camera disabled after capture failure: %s", exc)
-            raise
-        return result.path
-
-    def read_frame(self):
-        """从唯一长期会话读取一张独立 BGR 帧。
-
-        分步逻辑：
-        1. 拒绝使用已经不可用的摄像头会话。
-        2. 读取独立帧，避免调用方修改摄像头内部缓冲区。
-        3. 读帧失败后关闭会话，本进程不自动重连。
-        """
-
-        if self._session is None:
-            raise CameraCaptureError(self.error or "后端摄像头不可用")
-        try:
-            return self._session.read_frame(copy=True)
-        except CameraCaptureError as exc:
-            self._session.close()
-            self._session = None
-            self.error = str(exc)
-            LOGGER.error("Backend camera disabled after frame read failure: %s", exc)
-            raise
-
-    def save_frame(self, output_path, frame) -> Path:
-        """保存调用方选中的准确帧，不重新读取摄像头。
-
-        参数说明：
-        output_path: 目标 JPEG 路径。
-        frame: 先前由 read_frame() 返回的 BGR 帧。
-
-        写盘失败不关闭摄像头，因为设备仍可能继续正常读帧。
-        """
-
-        if self._session is None:
-            raise CameraCaptureError(self.error or "后端摄像头不可用")
-        return self._session.save_diagnostic_frame(output_path, frame).path
-
-    def close(self):
-        """后端关闭时释放自己持有的摄像头资源。"""
-
-        if self._session is not None:
-            self._session.close()
-            self._session = None
+        return session
 
 
 def parse_camera_device(environ):

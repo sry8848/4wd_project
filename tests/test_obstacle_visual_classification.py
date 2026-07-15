@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from src.algorithms.color_detect import ColorDetectionResult, ColorRegion
 from src.algorithms.qr_detect import QRCodeDecodeDiagnostics
@@ -30,6 +31,7 @@ class FakeCamera:
         self.frames = list(frames)
         self.clock = clock
         self.read_count = 0
+        self.close_count = 0
 
     def read_frame(self):
         self.read_count += 1
@@ -40,6 +42,9 @@ class FakeCamera:
         if isinstance(value, Exception):
             raise value
         return value
+
+    def close(self):
+        self.close_count += 1
 
 
 class FakeColorDetector:
@@ -98,6 +103,7 @@ class ObstacleVisualClassificationTaskTest(unittest.TestCase):
         self.assertEqual(result.classification_status, CLASSIFICATION_SUCCESS)
         self.assertEqual(result.record_frame, "r3")
         self.assertEqual(self.qr.calls, [])
+        self.assertEqual(self.camera.close_count, 1)
 
     def test_alternating_colors_reset_the_confirmation_streak(self):
         frames = ["r1", "b1", "r2", "r3", "r4"]
@@ -173,14 +179,53 @@ class ObstacleVisualClassificationTaskTest(unittest.TestCase):
         canceled = task.classify(cancel_requested_fn=lambda: True)
         self.assertEqual(canceled.recognition_error, ERROR_CANCELED)
         self.assertEqual(self.camera.read_count, 0)
+        self.assertEqual(self.camera.close_count, 1)
 
         task = self.build_task(
-            [CameraCaptureError("offline")],
+            [CameraCaptureError("offline") for _index in range(3)],
             {},
+            color_timeout_seconds=3.0,
         )
-        failed = task.classify()
+        with patch("src.tasks.obstacle_visual_classification.time.sleep"):
+            failed = task.classify()
         self.assertEqual(failed.recognition_error, ERROR_CAMERA_UNAVAILABLE)
         self.assertIsNone(failed.record_frame)
+        self.assertEqual(self.camera.close_count, 1)
+
+    def test_color_scan_recovers_after_transient_camera_failure(self):
+        task = self.build_task(
+            [CameraCaptureError("offline"), "r1", "r2", "r3"],
+            {"r1": ("red",), "r2": ("red",), "r3": ("red",)},
+        )
+
+        with patch("src.tasks.obstacle_visual_classification.time.sleep") as sleep:
+            result = task.classify()
+
+        self.assertEqual(result.classification_status, CLASSIFICATION_SUCCESS)
+        self.assertEqual(result.detected_color, "red")
+        sleep.assert_called_once_with(0.1)
+        self.assertEqual(self.camera.close_count, 1)
+
+    def test_qr_scan_recovers_after_transient_camera_failure(self):
+        task = self.build_task(
+            [
+                "b1",
+                "b2",
+                "b3",
+                CameraCaptureError("offline"),
+                "q1",
+            ],
+            {"b1": ("blue",), "b2": ("blue",), "b3": ("blue",)},
+            [QRCodeDecodeDiagnostics(("TOLL:GATE1",), True)],
+        )
+
+        with patch("src.tasks.obstacle_visual_classification.time.sleep") as sleep:
+            result = task.classify()
+
+        self.assertEqual(result.obstacle_type, OBSTACLE_TYPE_TOLL)
+        self.assertEqual(result.station_id, "GATE1")
+        sleep.assert_called_once_with(0.1)
+        self.assertEqual(self.camera.close_count, 1)
 
 
 if __name__ == "__main__":

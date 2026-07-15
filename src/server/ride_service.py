@@ -163,7 +163,7 @@ class RideService:
         参数说明：
         ride_id: submit_ride() 返回的活动行程 ID。
         navigator: hardware_factory 创建的 GridNavigator；本方法不拥有或关闭它。
-        obstacle_recorder: 后端长期摄像头与 ObstacleStore 的业务组合对象。
+        obstacle_recorder: 后端摄像头帧写盘能力与 ObstacleStore 的业务组合对象。
         face_verifier: 使用后端唯一摄像头的指定乘客核验任务。
         face_recorder: 保存每次成功或超时结果的记录器。
         obstacle_visual_task: 固定摄像头颜色与收费站二维码任务。

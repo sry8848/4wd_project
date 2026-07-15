@@ -65,7 +65,7 @@ class ObstacleVisualClassificationTask:
     Parameters:
     color_detector: ColorDetector configured for red and blue only.
     qr_recognizer: QRCodeRecognizer using the existing OpenCV decoder.
-    camera: BackendCamera owning the process's only camera session.
+    camera: BackendCamera owning the process's only task-scoped camera handle.
     color_confirm_frames: Consecutive unambiguous frames required for a color.
     color_timeout_seconds/qr_timeout_seconds: Independent phase time budgets.
     monotonic_fn: Monotonic clock used to enforce both deadlines.
@@ -115,81 +115,87 @@ class ObstacleVisualClassificationTask:
         best_area = -1.0
         last_frame = None
 
-        while self._monotonic() < deadline:
+        try:
+            while self._monotonic() < deadline:
+                if self._is_canceled(cancel_requested_fn):
+                    return self._failed_result(
+                        None,
+                        ERROR_CANCELED,
+                        best_frame if best_frame is not None else last_frame,
+                    )
+                try:
+                    frame = self.camera.read_frame()
+                except CameraCaptureError:
+                    # 设备短暂掉线时，BackendCamera 已释放旧句柄；下一轮重开。
+                    time.sleep(0.1)
+                    continue
+                last_frame = frame
+                try:
+                    detection = self.color_detector.detect(frame)
+                except Exception:
+                    return self._failed_result(None, ERROR_COLOR_DETECTION, frame)
+
+                colors = {region.color for region in detection.regions}
+                if "red" in colors and "blue" in colors:
+                    conflict_seen = True
+                    consecutive_color = None
+                    consecutive_count = 0
+                    best_frame = frame
+                    continue
+
+                color = detection.dominant_color
+                if color not in ("red", "blue"):
+                    consecutive_color = None
+                    consecutive_count = 0
+                    continue
+
+                area = detection.regions[0].area
+                if area > best_area:
+                    best_area = area
+                    best_frame = frame
+                if color == consecutive_color:
+                    consecutive_count += 1
+                else:
+                    consecutive_color = color
+                    consecutive_count = 1
+                if consecutive_count < self.color_confirm_frames:
+                    continue
+
+                if color == "red":
+                    return ObstacleVisualResult(
+                        OBSTACLE_TYPE_ORDINARY,
+                        "red",
+                        CLASSIFICATION_SUCCESS,
+                        None,
+                        None,
+                        frame,
+                    )
+                if phase_changed_fn is not None:
+                    phase_changed_fn(VISUAL_PHASE_SCANNING_TOLL_QR)
+                return self._scan_toll_qr(
+                    color_frame=frame,
+                    cancel_requested_fn=cancel_requested_fn,
+                )
+
             if self._is_canceled(cancel_requested_fn):
                 return self._failed_result(
                     None,
                     ERROR_CANCELED,
                     best_frame if best_frame is not None else last_frame,
                 )
-            try:
-                frame = self.camera.read_frame()
-            except CameraCaptureError:
-                return self._failed_result(
-                    None,
-                    ERROR_CAMERA_UNAVAILABLE,
-                    best_frame if best_frame is not None else last_frame,
-                )
-            last_frame = frame
-            try:
-                detection = self.color_detector.detect(frame)
-            except Exception:
-                return self._failed_result(None, ERROR_COLOR_DETECTION, frame)
-
-            colors = {region.color for region in detection.regions}
-            if "red" in colors and "blue" in colors:
-                conflict_seen = True
-                consecutive_color = None
-                consecutive_count = 0
-                best_frame = frame
-                continue
-
-            color = detection.dominant_color
-            if color not in ("red", "blue"):
-                consecutive_color = None
-                consecutive_count = 0
-                continue
-
-            area = detection.regions[0].area
-            if area > best_area:
-                best_area = area
-                best_frame = frame
-            if color == consecutive_color:
-                consecutive_count += 1
+            if last_frame is None:
+                error = ERROR_CAMERA_UNAVAILABLE
             else:
-                consecutive_color = color
-                consecutive_count = 1
-            if consecutive_count < self.color_confirm_frames:
-                continue
-
-            if color == "red":
-                return ObstacleVisualResult(
-                    OBSTACLE_TYPE_ORDINARY,
-                    "red",
-                    CLASSIFICATION_SUCCESS,
-                    None,
-                    None,
-                    frame,
+                error = (
+                    ERROR_COLOR_CONFLICT if conflict_seen else ERROR_COLOR_TIMEOUT
                 )
-            if phase_changed_fn is not None:
-                phase_changed_fn(VISUAL_PHASE_SCANNING_TOLL_QR)
-            return self._scan_toll_qr(
-                color_frame=frame,
-                cancel_requested_fn=cancel_requested_fn,
-            )
-
-        if self._is_canceled(cancel_requested_fn):
             return self._failed_result(
                 None,
-                ERROR_CANCELED,
+                error,
                 best_frame if best_frame is not None else last_frame,
             )
-        error = ERROR_COLOR_CONFLICT if conflict_seen else ERROR_COLOR_TIMEOUT
-        return self._failed_result(
-            None,
-            error,
-            best_frame if best_frame is not None else last_frame,
-        )
+        finally:
+            self.camera.close()
 
     def _scan_toll_qr(
         self,
@@ -201,6 +207,7 @@ class ObstacleVisualClassificationTask:
 
         deadline = self._monotonic() + self.qr_timeout_seconds
         invalid_payload_seen = False
+        qr_frame_seen = False
         diagnostic_frame = color_frame
         while self._monotonic() < deadline:
             if self._is_canceled(cancel_requested_fn):
@@ -208,11 +215,9 @@ class ObstacleVisualClassificationTask:
             try:
                 frame = self.camera.read_frame()
             except CameraCaptureError:
-                return self._failed_result(
-                    "blue",
-                    ERROR_CAMERA_UNAVAILABLE,
-                    diagnostic_frame,
-                )
+                time.sleep(0.1)
+                continue
+            qr_frame_seen = True
             try:
                 diagnostics = self.qr_recognizer.decode_with_diagnostics(frame)
             except Exception:
@@ -240,7 +245,12 @@ class ObstacleVisualClassificationTask:
 
         if self._is_canceled(cancel_requested_fn):
             return self._failed_result("blue", ERROR_CANCELED, diagnostic_frame)
-        error = ERROR_QR_INVALID_PAYLOAD if invalid_payload_seen else ERROR_QR_TIMEOUT
+        if invalid_payload_seen:
+            error = ERROR_QR_INVALID_PAYLOAD
+        elif qr_frame_seen:
+            error = ERROR_QR_TIMEOUT
+        else:
+            error = ERROR_CAMERA_UNAVAILABLE
         return self._failed_result("blue", error, diagnostic_frame)
 
     @staticmethod

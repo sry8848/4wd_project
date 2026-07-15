@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import time
 from typing import Any, Callable, Optional
 
+from src.hardware.camera import CameraCaptureError
+
 
 FACE_MATCHED = "matched"
 FACE_TIMEOUT = "timeout"
@@ -73,9 +75,9 @@ class FaceVerificationTask:
         """连续核验指定乘客，成功、超时或取消时返回一项最终结果。
 
         分步逻辑：
-        1. 每帧先检查取消，再读取唯一摄像头会话。
+        1. 每帧先检查取消；短暂读帧失败时在本次期限内重新打开。
         2. 只累计指定乘客的连续匹配帧，其他结果立即清零。
-        3. 保存最接近阈值的人脸帧供超时诊断；无脸时保留最后一帧。
+        3. 保存最接近阈值的人脸帧供超时诊断，结束时释放摄像头句柄。
         """
 
         if expected_passenger_id not in self.passenger_ids:
@@ -88,42 +90,55 @@ class FaceVerificationTask:
         best_label = None
         best_distance = float("inf")
 
-        while self._monotonic() < deadline:
+        try:
+            while self._monotonic() < deadline:
+                if cancel_requested_fn is not None and cancel_requested_fn():
+                    return FaceVerificationResult(FACE_CANCELED, None, None, None)
+
+                try:
+                    frame = self.camera.read_frame()
+                except CameraCaptureError:
+                    # 短暂断流只释放失效句柄；下一轮仍在本次核验期限内重开。
+                    time.sleep(0.1)
+                    continue
+                last_frame = frame
+                matches = self.recognizer.recognize(frame)
+                if matches:
+                    closest = min(matches, key=lambda item: item.distance)
+                    if closest.distance < best_distance:
+                        best_frame = frame
+                        best_label = closest.label
+                        best_distance = closest.distance
+
+                expected_matches = [
+                    match
+                    for match in matches
+                    if match.label == expected_passenger_id
+                ]
+                if not expected_matches:
+                    consecutive = 0
+                    continue
+
+                expected_match = min(
+                    expected_matches,
+                    key=lambda item: item.distance,
+                )
+                consecutive += 1
+                if consecutive >= self.confirm_frames:
+                    return FaceVerificationResult(
+                        FACE_MATCHED,
+                        expected_passenger_id,
+                        float(expected_match.distance),
+                        frame,
+                    )
+
             if cancel_requested_fn is not None and cancel_requested_fn():
                 return FaceVerificationResult(FACE_CANCELED, None, None, None)
-
-            frame = self.camera.read_frame()
-            last_frame = frame
-            matches = self.recognizer.recognize(frame)
-            if matches:
-                closest = min(matches, key=lambda item: item.distance)
-                if closest.distance < best_distance:
-                    best_frame = frame
-                    best_label = closest.label
-                    best_distance = closest.distance
-
-            expected_matches = [
-                match for match in matches if match.label == expected_passenger_id
-            ]
-            if not expected_matches:
-                consecutive = 0
-                continue
-
-            expected_match = min(expected_matches, key=lambda item: item.distance)
-            consecutive += 1
-            if consecutive >= self.confirm_frames:
-                return FaceVerificationResult(
-                    FACE_MATCHED,
-                    expected_passenger_id,
-                    float(expected_match.distance),
-                    frame,
-                )
-
-        if cancel_requested_fn is not None and cancel_requested_fn():
-            return FaceVerificationResult(FACE_CANCELED, None, None, None)
-        return FaceVerificationResult(
-            FACE_TIMEOUT,
-            best_label,
-            float(best_distance) if best_distance < float("inf") else None,
-            best_frame if best_frame is not None else last_frame,
-        )
+            return FaceVerificationResult(
+                FACE_TIMEOUT,
+                best_label,
+                float(best_distance) if best_distance < float("inf") else None,
+                best_frame if best_frame is not None else last_frame,
+            )
+        finally:
+            self.camera.close()

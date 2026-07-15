@@ -1,7 +1,8 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from src.hardware.camera import CameraCaptureError
 from src.tasks.face_verification import (
     FACE_CANCELED,
     FACE_MATCHED,
@@ -52,6 +53,7 @@ class FaceVerificationTaskTest(unittest.TestCase):
         self.assertEqual(result.frame, "frame-5")
         self.assertEqual(recognizer.recognize.call_count, 6)
         self.assertEqual(camera.read_frame.call_count, 6)
+        camera.close.assert_called_once_with()
 
     def test_timeout_keeps_closest_face_frame(self):
         bob_far = SimpleNamespace(label="Bob", distance=0.28)
@@ -90,6 +92,58 @@ class FaceVerificationTaskTest(unittest.TestCase):
         self.assertEqual(result.outcome, FACE_CANCELED)
         camera.read_frame.assert_not_called()
         recognizer.recognize.assert_not_called()
+        camera.close.assert_called_once_with()
+
+    def test_transient_camera_failure_recovers_within_same_attempt(self):
+        alice = SimpleNamespace(label="Alice", distance=0.1)
+        recognizer = Mock()
+        recognizer.labels = ("Alice",)
+        recognizer.recognize.side_effect = [[alice], [alice], [alice]]
+        camera = Mock()
+        camera.read_frame.side_effect = [
+            CameraCaptureError("temporary disconnect"),
+            "frame-1",
+            "frame-2",
+            "frame-3",
+        ]
+        task = FaceVerificationTask(
+            recognizer,
+            camera,
+            confirm_frames=3,
+            timeout_seconds=1.0,
+            monotonic_fn=StepClock(0.01),
+        )
+
+        with patch("src.tasks.face_verification.time.sleep") as sleep:
+            result = task.verify("Alice")
+
+        self.assertEqual(result.outcome, FACE_MATCHED)
+        self.assertEqual(result.frame, "frame-3")
+        sleep.assert_called_once_with(0.1)
+        camera.close.assert_called_once_with()
+
+    def test_camera_failures_continue_only_until_existing_timeout(self):
+        recognizer = Mock()
+        recognizer.labels = ("Alice",)
+        camera = Mock()
+        camera.read_frame.side_effect = CameraCaptureError("offline")
+        task = FaceVerificationTask(
+            recognizer,
+            camera,
+            timeout_seconds=0.25,
+            monotonic_fn=StepClock(0.1),
+        )
+
+        with patch("src.tasks.face_verification.time.sleep") as sleep:
+            result = task.verify("Alice")
+
+        self.assertEqual(result.outcome, FACE_TIMEOUT)
+        self.assertIsNone(result.frame)
+        self.assertGreaterEqual(camera.read_frame.call_count, 1)
+        self.assertLessEqual(camera.read_frame.call_count, 3)
+        self.assertEqual(sleep.call_count, camera.read_frame.call_count)
+        recognizer.recognize.assert_not_called()
+        camera.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

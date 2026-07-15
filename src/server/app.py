@@ -130,7 +130,7 @@ async def lifespan(app_instance: FastAPI):
 
     分步逻辑：
     1. 启动前创建 5x5 网格导航硬件，失败则拒绝启动。
-    2. 只创建一个长期摄像头所有者；打不开时保留后端其它能力。
+    2. 创建唯一摄像头所有者并做一次读取探测，随后立即释放句柄。
     3. 关闭时强制终止活动行程，先停车，再释放摄像头。
     """
     grid_definition = GridResponse.default()
@@ -140,7 +140,7 @@ async def lifespan(app_instance: FastAPI):
     ]
     hardware = create_grid_navigation_hardware(grid)
     camera = BackendCamera(device=parse_camera_device(os.environ))
-    camera.start()
+    camera.probe()
     obstacle_recorder = ObstacleRecorder(obstacle_store, camera)
     face_verifier = None
     face_recorder = None
@@ -152,35 +152,33 @@ async def lifespan(app_instance: FastAPI):
         recognizer = LocalFaceRecognizer(detector=detector, threshold=0.30)
         recognizer.load_dataset(FACE_DATASET_DIR)
         passenger_ids = recognizer.labels
-        if camera.available:
-            face_verifier = FaceVerificationTask(
-                recognizer,
-                camera,
-                confirm_frames=3,
-                timeout_seconds=20.0,
-            )
-            face_recorder = FaceVerificationRecorder(face_verification_store, camera)
+        face_verifier = FaceVerificationTask(
+            recognizer,
+            camera,
+            confirm_frames=3,
+            timeout_seconds=20.0,
+        )
+        face_recorder = FaceVerificationRecorder(face_verification_store, camera)
     except FaceRecognitionError as exc:
         LOGGER.warning("Face recognition unavailable at startup: %s", exc)
     try:
-        if camera.available:
-            color_detector = ColorDetector(
-                colors=("red", "blue"),
-                min_area=project_config.OBSTACLE_COLOR_MIN_AREA,
-            )
-            qr_recognizer = QRCodeRecognizer()
-            obstacle_visual_task = ObstacleVisualClassificationTask(
-                color_detector,
-                qr_recognizer,
-                camera,
-                color_confirm_frames=(
-                    project_config.OBSTACLE_COLOR_CONFIRM_FRAMES
-                ),
-                color_timeout_seconds=(
-                    project_config.OBSTACLE_COLOR_TIMEOUT_SECONDS
-                ),
-                qr_timeout_seconds=project_config.TOLL_QR_TIMEOUT_SECONDS,
-            )
+        color_detector = ColorDetector(
+            colors=("red", "blue"),
+            min_area=project_config.OBSTACLE_COLOR_MIN_AREA,
+        )
+        qr_recognizer = QRCodeRecognizer()
+        obstacle_visual_task = ObstacleVisualClassificationTask(
+            color_detector,
+            qr_recognizer,
+            camera,
+            color_confirm_frames=(
+                project_config.OBSTACLE_COLOR_CONFIRM_FRAMES
+            ),
+            color_timeout_seconds=(
+                project_config.OBSTACLE_COLOR_TIMEOUT_SECONDS
+            ),
+            qr_timeout_seconds=project_config.TOLL_QR_TIMEOUT_SECONDS,
+        )
     except (ColorDetectionError, QRCodeRecognitionError) as exc:
         LOGGER.warning("Obstacle vision unavailable at startup: %s", exc)
     if hardware.ultrasonic is not None:
@@ -363,7 +361,7 @@ def get_health():
         "hardware_ready": app.state.navigation_hardware is not None,
         "camera_ready": (
             app.state.backend_camera is not None
-            and app.state.backend_camera.available
+            and app.state.backend_camera.ready
         ),
         "camera_error": (
             app.state.backend_camera.error
@@ -436,10 +434,10 @@ def submit_ride(payload: Dict[str, Any], background_tasks: BackgroundTasks):
         )
 
     camera = app.state.backend_camera
-    if camera is None or not camera.available:
+    if camera is None:
         raise RuntimeStateError(
             "camera_not_ready",
-            "固定摄像头不可用，不能创建接客行程",
+            "固定摄像头尚未初始化，不能创建接客行程",
         )
     face_verifier = app.state.face_verifier
     face_recorder = app.state.face_recorder

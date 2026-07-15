@@ -42,7 +42,7 @@ class CaptureResult:
 
 @dataclass(frozen=True)
 class SavedFrameDiagnostics:
-    """Metadata for a diagnostic frame written from an active camera session.
+    """Metadata for one diagnostic frame written from an in-memory image.
 
     Args:
         path: Exact JPEG path written to disk.
@@ -252,32 +252,15 @@ class OpenCVCameraSession:
             output_path: Exact JPEG path used for the diagnostic snapshot.
             frame: OpenCV BGR image previously returned by read_frame().
 
-        Steps:
-        1. Validate that this session still owns OpenCV and that a frame exists.
-        2. Create the destination directory and write the exact supplied frame.
-        3. Return resolution, mean brightness and sharpness for terminal output.
+        The supplied frame can still be saved after the capture handle is released.
+        An open session reuses its imported OpenCV module; a closed session imports
+        OpenCV only for image encoding.
         """
 
-        if self._camera is None or self._cv2 is None:
-            raise CameraCaptureError("OpenCV camera session is not open")
-        if frame is None:
-            raise CameraCaptureError("Diagnostic frame is empty")
-
-        target_path = Path(output_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self._cv2.imwrite(str(target_path), frame):
-            raise CameraCaptureError(
-                f"Failed to write diagnostic frame to {target_path}"
-            )
-
-        frame_height, frame_width = frame.shape[:2]
-        gray = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2GRAY)
-        return SavedFrameDiagnostics(
-            path=target_path,
-            width=int(frame_width),
-            height=int(frame_height),
-            mean_brightness=float(gray.mean()),
-            sharpness=sharpness_score(self._cv2, frame),
+        return write_diagnostic_frame(
+            output_path,
+            frame,
+            cv2_module=self._cv2,
         )
 
     def close(self) -> None:
@@ -349,6 +332,53 @@ class OpenCVCameraSession:
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
+
+
+def write_diagnostic_frame(
+    output_path: PathLike,
+    frame,
+    *,
+    cv2_module=None,
+) -> SavedFrameDiagnostics:
+    """Save one existing BGR frame without requiring an open camera handle.
+
+    Args:
+        output_path: Exact JPEG path used for the diagnostic snapshot.
+        frame: OpenCV BGR image previously returned by a camera read.
+        cv2_module: Existing OpenCV module when the caller already imported it.
+
+    Steps:
+        1. Load only the OpenCV image encoder when the caller did not provide it.
+        2. Write the exact supplied frame without opening or reading a camera.
+        3. Return resolution and image-quality diagnostics.
+    """
+
+    if frame is None:
+        raise CameraCaptureError("Diagnostic frame is empty")
+    if cv2_module is None:
+        try:
+            import cv2 as cv2_module
+        except ImportError as exc:
+            raise CameraCaptureError(
+                "OpenCV is not installed; the diagnostic frame cannot be saved."
+            ) from exc
+
+    target_path = Path(output_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2_module.imwrite(str(target_path), frame):
+        raise CameraCaptureError(
+            f"Failed to write diagnostic frame to {target_path}"
+        )
+
+    frame_height, frame_width = frame.shape[:2]
+    gray = cv2_module.cvtColor(frame, cv2_module.COLOR_BGR2GRAY)
+    return SavedFrameDiagnostics(
+        path=target_path,
+        width=int(frame_width),
+        height=int(frame_height),
+        mean_brightness=float(gray.mean()),
+        sharpness=sharpness_score(cv2_module, frame),
+    )
 
 
 def build_photo_path(
